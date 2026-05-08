@@ -4,7 +4,7 @@ import {
   loadState, saveState, clearState,
   TERMS, termInfo, getTerm, allSubjects,
   newSubject, newAssessment, buildTimeline,
-  exportJSON, importJSON,
+  exportJSON, importJSON, guessCurrentTerm,
 } from './storage.js';
 
 import {
@@ -19,6 +19,7 @@ import {
 import {
   applyCoursePlan, getKnownCoursePlan, parsePayload,
   consumeImportFragment, buildBookmarklet, extractCoursePlanId,
+  parseAnyImport, markPastTermsAsCompleted,
 } from './course-planner-import.js';
 
 // === State + persistence ===
@@ -106,25 +107,49 @@ function renderSetup() {
     yearOptions.push(`<option value="${y}"${y === currentYear ? ' selected' : ''}>${y}</option>`);
   }
 
+  // Year options for the "current year" pick. Start year stays the same range as before.
+  const guessedTerm = guessCurrentTerm();
+  const guessedYear = currentYear;
+
   section.innerHTML = `
     <div class="setup-banner" role="region" aria-labelledby="setup-h">
       <h2 id="setup-h">Welcome — let's set up your timeline</h2>
-      <p>Tell us when you started at the University of Melbourne so we can lay out your semesters. You can change this later.</p>
+      <p>Two quick questions and we'll lay out your semesters. You can change these later.</p>
       <form class="setup-form" id="setup-form">
-        <label class="field">
-          <span>Start year</span>
-          <select name="startYear">${yearOptions.join('')}</select>
-        </label>
-        <label class="field">
-          <span>Started in</span>
-          <select name="startSemester">
-            <option value="1">Semester 1</option>
-            <option value="2">Semester 2</option>
-          </select>
-        </label>
+        <fieldset class="setup-fieldset">
+          <legend>When did you start?</legend>
+          <label class="field">
+            <span>Start year</span>
+            <select name="startYear">${yearOptions.join('')}</select>
+          </label>
+          <label class="field">
+            <span>Started in</span>
+            <select name="startSemester">
+              <option value="1">Semester 1</option>
+              <option value="2">Semester 2</option>
+            </select>
+          </label>
+        </fieldset>
+        <fieldset class="setup-fieldset">
+          <legend>Where are you now?</legend>
+          <label class="field">
+            <span>Current year</span>
+            <select name="currentYear">${yearOptions.map(o => o.replace(' selected', '').replace(`value="${guessedYear}"`, `value="${guessedYear}" selected`)).join('')}</select>
+          </label>
+          <label class="field">
+            <span>Current term</span>
+            <select name="currentTerm">
+              <option value="summer"${guessedTerm === 'summer' ? ' selected' : ''}>Summer Term</option>
+              <option value="sem1"${guessedTerm === 'sem1' ? ' selected' : ''}>Semester 1</option>
+              <option value="winter"${guessedTerm === 'winter' ? ' selected' : ''}>Winter Term</option>
+              <option value="sem2"${guessedTerm === 'sem2' ? ' selected' : ''}>Semester 2</option>
+            </select>
+          </label>
+          <p class="hint full">Subjects in any term before this will be auto-marked completed when you import a plan — just enter their final marks later.</p>
+        </fieldset>
         <div class="full" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
           <button class="btn" type="submit" id="setup-submit">Get started</button>
-          <button class="btn btn-secondary" type="button" id="setup-planner-import">Import Course Planner link</button>
+          <button class="btn btn-secondary" type="button" id="setup-planner-import">Import from Course Planner</button>
           <button class="btn btn-secondary" type="button" id="setup-import">Import existing data</button>
         </div>
       </form>
@@ -139,6 +164,8 @@ function renderSetup() {
         completed: true,
         startYear: Number(fd.get('startYear')),
         startSemester: Number(fd.get('startSemester')),
+        currentYear: Number(fd.get('currentYear')),
+        currentTerm: String(fd.get('currentTerm')),
       };
     });
   };
@@ -233,7 +260,7 @@ function renderWAMSection() {
       </div>
       <div class="wam-value">
         ${cur == null
-          ? '<span class="empty">No completed subjects yet</span>'
+          ? `<span class="empty">${completeCount > 0 ? 'Add final marks to see your WAM' : 'No completed subjects yet'}</span>`
           : `${fmtMark(cur)}<span class="unit">/ 100</span>`}
       </div>
       <div class="wam-meta">
@@ -422,10 +449,11 @@ function renderTermCard(year, termKey) {
   const canAdd = subjects.length < t.maxSubjects;
   const recommended = t.recommendedMax ?? t.maxSubjects;
   const overload = subjects.length > recommended;
+  const isCurrent = state.setup.currentYear === year && state.setup.currentTerm === termKey;
   return `
-    <div class="term-card${overload ? ' is-overload' : ''}">
+    <div class="term-card${overload ? ' is-overload' : ''}${isCurrent ? ' is-current' : ''}">
       <div class="term-head">
-        <h4>${t.label} <span class="term-tag${overload ? ' tag-overload' : ''}">${subjects.length}/${t.maxSubjects}</span></h4>
+        <h4>${t.label} ${isCurrent ? '<span class="term-tag tag-current">now</span>' : ''} <span class="term-tag${overload ? ' tag-overload' : ''}">${subjects.length}/${t.maxSubjects}</span></h4>
         ${avg != null ? gradePill(avg, { kind: subjects.every(isSubjectComplete) ? 'actual' : 'predicted' }) : ''}
       </div>
       ${avg != null
@@ -533,7 +561,7 @@ function openCoursePlannerImport(prefill = null) {
   const returnUrl = location.origin + location.pathname;
   const bookmarklet = buildBookmarklet(returnUrl);
   const initialUrl = prefill?.url ? escapeHtml(prefill.url) : '';
-  const initialJson = prefill?.json ? escapeHtml(prefill.json) : '';
+  const initialPaste = prefill?.paste ? escapeHtml(prefill.paste) : '';
   const initialError = prefill?.error || '';
 
   root.innerHTML = `
@@ -543,44 +571,48 @@ function openCoursePlannerImport(prefill = null) {
         <button class="btn-icon" id="planner-import-close" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
-        <p class="hint">Pull your subjects directly from the University of Melbourne Course Planner. Three ways to do it:</p>
+        <p class="hint">Pull your subjects directly from the University of Melbourne Course Planner. Easiest way first:</p>
 
         <details class="import-step" open>
-          <summary><strong>1. Use the bookmarklet</strong> <span class="step-tag">recommended</span></summary>
+          <summary><strong>1. Paste your plan</strong> <span class="step-tag step-tag-ok">recommended</span></summary>
           <div class="step-body">
-            <p class="hint">Drag this button to your bookmarks bar, then open your plan on Course Planner and click the bookmarklet:</p>
+            <ol class="hint-list">
+              <li>Open your plan on <a href="https://course-planner.unimelb.edu.au/" target="_blank" rel="noopener">Course Planner</a>.</li>
+              <li>Press <kbd>⌘A</kbd>/<kbd>Ctrl A</kbd> then <kbd>⌘C</kbd>/<kbd>Ctrl C</kbd> to copy everything on the page.</li>
+              <li>Paste it below and we'll figure out the rest.</li>
+            </ol>
+            <label class="field">
+              <span>Pasted page (or exported JSON)</span>
+              <textarea id="planner-import-paste" rows="6" placeholder="Paste the entire Course Planner page here…">${initialPaste}</textarea>
+            </label>
+            <button class="btn" id="planner-import-paste-btn" type="button">Analyse and import</button>
+          </div>
+        </details>
+
+        <details class="import-step">
+          <summary><strong>2. Use the bookmarklet</strong> <span class="step-tag step-tag-wip">not working yet</span></summary>
+          <div class="step-body">
+            <p class="hint">Experimental — some parts of this still need to be fixed for the live Course Planner DOM. Try paste-mode above first.</p>
             <p>
               <a class="btn btn-secondary bookmarklet" id="planner-bookmarklet" href="${bookmarklet}" draggable="true" onclick="event.preventDefault(); alert('Drag this button to your bookmarks bar — clicking it from this page does nothing.');">📌 Send to WAM Calculator</a>
             </p>
             <ol class="hint-list">
-              <li>Drag the button above onto your bookmarks bar (or right-click → Bookmark this link).</li>
-              <li>Open your plan on <a href="https://course-planner.unimelb.edu.au/" target="_blank" rel="noopener">Course Planner</a> while signed in to your UoM account.</li>
-              <li>Click the bookmark — your plan opens here automatically.</li>
+              <li>Drag the button above onto your bookmarks bar.</li>
+              <li>Open your plan on Course Planner while signed in.</li>
+              <li>Click the bookmark.</li>
             </ol>
           </div>
         </details>
 
         <details class="import-step">
-          <summary><strong>2. Paste a share link</strong></summary>
+          <summary><strong>3. Paste a share link</strong> <span class="step-tag step-tag-wip">not working yet</span></summary>
           <div class="step-body">
-            <p class="hint">If your plan link matches one we've curated, we'll import it directly. Otherwise we can't fetch the data — Course Planner needs your login session, so use the bookmarklet above.</p>
+            <p class="hint">Course Planner needs your UoM login to fetch the data, so a bare share link can't be auto-loaded. We can only match links we've curated by hand.</p>
             <label class="field">
               <span>Course Planner link</span>
               <input id="planner-import-url" type="url" inputmode="url" placeholder="https://course-planner.unimelb.edu.au/B-SCI/2025/plan/..." autocomplete="off" value="${initialUrl}" />
             </label>
             <button class="btn btn-secondary btn-sm" id="planner-import-link-btn" type="button">Try this link</button>
-          </div>
-        </details>
-
-        <details class="import-step">
-          <summary><strong>3. Paste exported JSON</strong></summary>
-          <div class="step-body">
-            <p class="hint">If you already saved a plan from another browser or shared it with a friend, paste it here.</p>
-            <label class="field">
-              <span>JSON payload</span>
-              <textarea id="planner-import-json" rows="5" placeholder='{"subjects":[…]}'>${initialJson}</textarea>
-            </label>
-            <button class="btn btn-secondary btn-sm" id="planner-import-json-btn" type="button">Import JSON</button>
           </div>
         </details>
 
@@ -620,6 +652,20 @@ function openCoursePlannerImport(prefill = null) {
   $('#planner-import-cancel').addEventListener('click', closeModal);
   root.addEventListener('click', (e) => { if (e.target === root) closeModal(); });
 
+  $('#planner-import-paste-btn').addEventListener('click', () => {
+    const text = $('#planner-import-paste').value;
+    if (!text || !text.trim()) {
+      showError('Paste your Course Planner page (or a JSON export) above first.');
+      return;
+    }
+    const plan = parseAnyImport(text);
+    if (!plan) {
+      showError("Couldn't read that paste. Make sure you copied the whole Course Planner page (subject codes like MAST10006 are what we look for).");
+      return;
+    }
+    tryApply(plan);
+  });
+
   $('#planner-import-link-btn').addEventListener('click', () => {
     const url = $('#planner-import-url').value;
     const id = extractCoursePlanId(url);
@@ -629,17 +675,7 @@ function openCoursePlannerImport(prefill = null) {
     }
     const plan = getKnownCoursePlan(url);
     if (!plan) {
-      showError(`That plan (${id.slice(0, 8)}…) isn't in our curated list. Course Planner requires your UoM login to fetch the data, so use the bookmarklet above instead.`);
-      return;
-    }
-    tryApply(plan);
-  });
-
-  $('#planner-import-json-btn').addEventListener('click', () => {
-    const text = $('#planner-import-json').value;
-    const plan = parsePayload(text);
-    if (!plan) {
-      showError("Couldn't read that JSON. Make sure it has a `subjects` array.");
+      showError(`That plan (${id.slice(0, 8)}…) isn't in our curated list. Course Planner needs your UoM login to fetch the data automatically — use the paste method (option 1) above instead.`);
       return;
     }
     tryApply(plan);
@@ -1052,6 +1088,7 @@ function renderModal() {
   };
   $$('.assessments-table tr[data-aid]').forEach(wireAssessmentNode);
   $$('.assessments-stack .assessment-card[data-aid]').forEach(wireAssessmentNode);
+  wireZeroSelect(root);
 }
 
 function debounce(fn, ms) {
@@ -1062,9 +1099,54 @@ function debounce(fn, ms) {
   };
 }
 
+// === Theme handling ===
+function applyTheme(theme) {
+  const t = ['light', 'dark', 'auto'].includes(theme) ? theme : 'auto';
+  if (t === 'auto') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', t);
+  }
+  // Update icon visibility via the dataset on the toggle
+  const btn = $('#theme-toggle');
+  if (btn) btn.dataset.themeMode = t;
+}
+
+function cycleTheme(current) {
+  return current === 'auto' ? 'light' : (current === 'light' ? 'dark' : 'auto');
+}
+
+// === Auto-select '0' on first focus so users can replace it without backspacing ===
+function wireZeroSelect(root = document) {
+  $$('input[type="number"]', root).forEach((inp) => {
+    if (inp.dataset.zeroSelect === '1') return;
+    inp.dataset.zeroSelect = '1';
+    inp.addEventListener('focus', () => {
+      const v = inp.value.trim();
+      if (v === '0' || v === '0.0' || v === '0.00') {
+        // wait a tick so caret movement doesn't fight us
+        setTimeout(() => { try { inp.select(); } catch {} }, 0);
+      }
+    });
+  });
+}
+
 // === Header actions ===
 function wireHeader() {
   $('#btn-planner-import').addEventListener('click', openCoursePlannerImport);
+
+  // Apply persisted theme + wire toggle button
+  const initialTheme = state.settings?.theme || 'auto';
+  applyTheme(initialTheme);
+  $('#theme-toggle').addEventListener('click', () => {
+    const cur = state.settings?.theme || 'auto';
+    const next = cycleTheme(cur);
+    state.settings = state.settings || {};
+    state.settings.theme = next;
+    persist();
+    applyTheme(next);
+    toast(`Theme: ${next}`);
+  });
 
   $('#btn-export').addEventListener('click', () => {
     const data = exportJSON(state);
@@ -1119,6 +1201,7 @@ function render() {
     renderWAMSection();
     renderTimeline();
   }
+  wireZeroSelect();
 }
 
 // Keyboard: ESC closes modal

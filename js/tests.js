@@ -26,9 +26,13 @@ import {
   getKnownCoursePlan,
   parsePayload,
   applyCoursePlan,
+  parsePastedText,
+  parseAnyImport,
+  isTermStrictlyBefore,
+  markPastTermsAsCompleted,
 } from './course-planner-import.js';
 
-import { defaultState, allSubjects } from './storage.js';
+import { defaultState, allSubjects, guessCurrentTerm } from './storage.js';
 
 const results = [];
 function approx(a, b, eps = 1e-6) {
@@ -419,6 +423,235 @@ test('applyCoursePlan: replace=false appends without clearing', () => {
   applyCoursePlan(state, plan, { replace: false });
   // 1 existing + 24 imported = 25
   assertEq(allSubjects(state).length, 25);
+});
+
+// --- Term comparison + auto-completion ---
+test('isTermStrictlyBefore: across years', () => {
+  assert(isTermStrictlyBefore(2024, 'sem2', 2025, 'sem1'));
+  assert(!isTermStrictlyBefore(2025, 'sem1', 2024, 'sem2'));
+});
+test('isTermStrictlyBefore: same year, term order', () => {
+  assert(isTermStrictlyBefore(2025, 'summer', 2025, 'sem1'));
+  assert(isTermStrictlyBefore(2025, 'sem1', 2025, 'winter'));
+  assert(isTermStrictlyBefore(2025, 'winter', 2025, 'sem2'));
+  assert(!isTermStrictlyBefore(2025, 'sem2', 2025, 'sem1'));
+  assert(!isTermStrictlyBefore(2025, 'sem1', 2025, 'sem1'));
+});
+
+test('markPastTermsAsCompleted: flags subjects in earlier terms only', () => {
+  const state = defaultState();
+  state.setup = { completed: true, startYear: 2024, startSemester: 1, currentYear: 2026, currentTerm: 'sem1' };
+  state.years = {
+    '2025': { sem2: { subjects: [{ id: 'a', completed: false, assessments: [] }] } },
+    '2026': {
+      summer: { subjects: [{ id: 'b', completed: false, assessments: [] }] },
+      sem1:   { subjects: [{ id: 'c', completed: false, assessments: [] }] },
+      sem2:   { subjects: [{ id: 'd', completed: false, assessments: [] }] },
+    },
+  };
+  markPastTermsAsCompleted(state);
+  assertEq(state.years['2025'].sem2.subjects[0].completed, true);
+  assertEq(state.years['2026'].summer.subjects[0].completed, true);
+  assertEq(state.years['2026'].sem1.subjects[0].completed, false);  // current term — not past
+  assertEq(state.years['2026'].sem2.subjects[0].completed, false);  // future
+});
+
+test('guessCurrentTerm: maps months sensibly', () => {
+  assertEq(guessCurrentTerm(new Date('2026-01-15')), 'summer');
+  assertEq(guessCurrentTerm(new Date('2026-03-15')), 'sem1');
+  assertEq(guessCurrentTerm(new Date('2026-06-20')), 'winter');
+  assertEq(guessCurrentTerm(new Date('2026-09-15')), 'sem2');
+  assertEq(guessCurrentTerm(new Date('2026-12-15')), 'summer');
+});
+
+// --- Pasted Course Planner page parser ---
+// Header lines (Semester 1/2, Summer Term, Winter Term) MUST keep their trailing
+// space — that's the signal we use to distinguish them from "also-offered-in"
+// listings inside a subject block. Don't reformat this fixture.
+const PASTED_PLAN_FIXTURE = [
+  'University of Melbourne Logo',
+  'My Course Planner',
+  'yalsihli',
+  '',
+  'Bachelor of Science Data Science',
+  '',
+  '100%',
+  'Planned',
+  '2025',
+  '  ',
+  'Semester 2 ',
+  'COMPULSORY',
+  'SCIE10005 | Level 1 | 12.5 points',
+  '',
+  "Today's Science, Tomorrow's World",
+  '',
+  'Semester 2',
+  '  ',
+  'Semester 1',
+  '  ',
+  'DISCIPLINE',
+  'COMP10001 | Level 1 | 12.5 points',
+  '',
+  'Foundations of Computing',
+  '',
+  'Semester 1',
+  '  ',
+  'Semester 2',
+  '  ',
+  'DISCIPLINE',
+  'MAST10006 | Level 1 | 12.5 points',
+  '',
+  'Calculus 2',
+  '',
+  'Semester 2',
+  '  ',
+  '2026',
+  '  ',
+  'Summer Term ',
+  'DISCIPLINE',
+  'MAST10007 | Level 1 | 12.5 points',
+  '',
+  'Linear Algebra',
+  '',
+  'Summer Term',
+  '  ',
+  'Semester 1 ',
+  'DISCIPLINE',
+  'MAST20006 | Level 2 | 12.5 points',
+  '',
+  'Probability for Statistics',
+  '',
+  'Semester 2',
+  '  ',
+  'Semester 1',
+  '  ',
+  '    ',
+  'search',
+  'ADD A SUBJECT',
+  'Semester 2 ',
+  'DISCIPLINE',
+  'MAST20005 | Level 2 | 12.5 points',
+  '',
+  'Statistics',
+  '',
+  'Semester 2',
+  '  ',
+  '2027',
+  '  ',
+  'Semester 1 ',
+  'DATA SCIENCE, MAJOR',
+  'MAST30025 | Level 3 | 12.5 points',
+  '',
+  'Linear Statistical Models',
+  '',
+  'Semester 1',
+  '',
+  'BREADTH',
+  'MUSI20149 | Level 2 | 12.5 points',
+  '',
+  'Music Psychology',
+  '',
+  'Summer Term',
+  '  ',
+  'Semester 1',
+  '  ',
+  'Winter Term ',
+  '    ',
+  'search',
+  'ADD A SUBJECT',
+  '    ',
+  'search',
+  'ADD A SUBJECT',
+  'Semester 2 ',
+  'DATA SCIENCE, MAJOR',
+  'MAST30027 | Level 3 | 12.5 points',
+  '',
+  'Modern Applied Statistics',
+  '',
+  'Semester 2',
+  '  ',
+].join('\n');
+
+test('parsePastedText: extracts subjects from a real Course Planner paste', () => {
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  assert(plan, 'plan parsed');
+  // Counts: 2025 sem2 (3) + 2026 summer (1) + 2026 sem1 (1) + 2026 sem2 (1) +
+  //         2027 sem1 (2: MAST30025, MUSI20149) + 2027 sem2 (1) = 9
+  assertEq(plan.subjects.length, 9);
+});
+
+test('parsePastedText: assigns the right (year, term) to each subject', () => {
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  const lookup = Object.fromEntries(plan.subjects.map(s => [s.code, s]));
+  assertEq(lookup.SCIE10005.year, 2025);
+  assertEq(lookup.SCIE10005.term, 'sem2');
+  assertEq(lookup.MAST10007.year, 2026);
+  assertEq(lookup.MAST10007.term, 'summer');
+  assertEq(lookup.MAST20006.term, 'sem1');     // 2026 sem1
+  assertEq(lookup.MAST20005.year, 2026);
+  assertEq(lookup.MAST20005.term, 'sem2');
+  assertEq(lookup.MAST30025.year, 2027);
+  assertEq(lookup.MAST30025.term, 'sem1');
+  assertEq(lookup.MUSI20149.term, 'sem1');     // ALSO 2027 sem1, NOT winter (offering listings)
+  assertEq(lookup.MAST30027.term, 'sem2');     // 2027 sem2 (after empty Winter Term)
+});
+
+test('parsePastedText: pulls level/points/category metadata', () => {
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  const lookup = Object.fromEntries(plan.subjects.map(s => [s.code, s]));
+  assertEq(lookup.SCIE10005.level, 1);
+  assertEq(lookup.SCIE10005.points, 12.5);
+  assertEq(lookup.SCIE10005.category, 'Compulsory');
+  assertEq(lookup.MAST30025.level, 3);
+  assertEq(lookup.MAST30025.category, 'Data Science, Major');
+});
+
+test('parsePastedText: tags SCIE10005 as pass/fail', () => {
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  const tstw = plan.subjects.find(s => s.code === 'SCIE10005');
+  assertEq(tstw.gradingMode, 'passFail');
+});
+
+test('parsePastedText: pulls course name and major from the title line', () => {
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  assertEq(plan.courseName, 'Bachelor of Science');
+  assertEq(plan.major, 'Data Science');
+});
+
+test('parsePastedText: detects start year/semester from earliest subject', () => {
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  assertEq(plan.startYear, 2025);
+  assertEq(plan.startSemester, 2);
+});
+
+test('parsePastedText: garbage returns null', () => {
+  assertEq(parsePastedText('this is not a course plan'), null);
+  assertEq(parsePastedText(''), null);
+});
+
+test('parseAnyImport: dispatches JSON over text', () => {
+  const json = JSON.stringify({ subjects: [{ year: 2025, term: 'sem1', code: 'TEST10001', name: 'X' }] });
+  assertEq(parseAnyImport(json).subjects[0].code, 'TEST10001');
+});
+test('parseAnyImport: falls back to text parser', () => {
+  const plan = parseAnyImport(PASTED_PLAN_FIXTURE);
+  assert(plan && plan.subjects.length === 9);
+});
+
+test('applyCoursePlan + currentTerm: imported past subjects auto-complete', () => {
+  const state = defaultState();
+  state.setup.currentYear = 2027;
+  state.setup.currentTerm = 'sem2';
+  state.setup.startYear = 2025;
+  state.setup.startSemester = 2;
+  const plan = parsePastedText(PASTED_PLAN_FIXTURE);
+  applyCoursePlan(state, plan, { replace: true });
+  // Anything before 2027 sem2 should be marked completed.
+  const all = allSubjects(state);
+  const past = all.filter(({ subject, year, term }) => isTermStrictlyBefore(year, term, 2027, 'sem2'));
+  for (const { subject } of past) {
+    assert(subject.completed, `expected past subject ${subject.code} to be completed`);
+  }
 });
 
 export function runTests() {

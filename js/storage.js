@@ -25,14 +25,28 @@ export function defaultState() {
       completed: false,
       startYear: null,
       startSemester: null,
+      currentYear: null,
+      currentTerm: null,
     },
     years: {}, // map of "2024" -> { sem1: { subjects: [] }, winter: {...}, ... }
     coursePlan: null,
     targetWAM: null,
     settings: {
       showWhatIf: true,
+      theme: 'auto', // 'light' | 'dark' | 'auto'
+      wamMode: 'simple', // 'simple' | 'official'
     },
   };
+}
+
+// Heuristic: roughly which UoM term is "current" given today's date.
+// Sem 1: Mar-May, Winter: Jun-Jul, Sem 2: Aug-Oct, Summer: Nov-Feb.
+export function guessCurrentTerm(now = new Date()) {
+  const m = now.getMonth(); // 0 = Jan
+  if (m === 11 || m <= 1) return 'summer';
+  if (m >= 2 && m <= 4) return 'sem1';
+  if (m >= 5 && m <= 6) return 'winter';
+  return 'sem2';
 }
 
 export function loadState() {
@@ -143,7 +157,7 @@ export function newAssessment(name = 'Assessment') {
   return {
     id: newId(),
     name,
-    weight: 0,
+    weight: null, // empty placeholder; user fills in
     score: null,
     predicted: null,
     dueDate: null,
