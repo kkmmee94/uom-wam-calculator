@@ -271,29 +271,53 @@ export function subjectWAMMark(subject, opts = {}) {
   return null;
 }
 
+// UoM "official" WAM weighting: a subject's contribution is mark × points × levelWeight,
+// where levelWeight is 1 for level-1 subjects and 2 for level 2+ (UoM doubles the
+// weight of higher-level subjects in the official transcript WAM).
+// See: https://students.unimelb.edu.au/your-course/manage-your-course/exams-results-and-progress/results-and-progression/wam-calculation
+function subjectWeightForWAM(subject, mode) {
+  if (mode === 'simple') return 1;
+  const points = Number(subject?.points) || 12.5;
+  const level = Number(subject?.level) || 1;
+  const levelWeight = level >= 2 ? 2 : 1;
+  return points * levelWeight;
+}
+
 // Compute current WAM (from completed subjects). Uses finalMark when every
 // assessment is scored; otherwise — if the user explicitly flagged the subject
 // as complete — falls back to the projected mark so it still counts.
-export function currentWAM(subjects) {
-  const marks = [];
+//
+// `mode` controls the weighting:
+//   'simple' (default) — average of subject marks (all subjects equal).
+//   'official'         — UoM transcript-style: weighted by points × level.
+export function currentWAM(subjects, mode = 'simple') {
+  let weighted = 0;
+  let totalWeight = 0;
   for (const s of subjects) {
     if (!isSubjectComplete(s)) continue;
     const mark = subjectWAMMark(s, { includeProjected: true });
-    if (mark != null) marks.push(mark);
+    if (mark == null) continue;
+    const w = subjectWeightForWAM(s, mode);
+    weighted += mark * w;
+    totalWeight += w;
   }
-  if (marks.length === 0) return null;
-  return marks.reduce((a, b) => a + b, 0) / marks.length;
+  if (totalWeight === 0) return null;
+  return weighted / totalWeight;
 }
 
 // Compute predicted WAM including in-progress subjects with projected/predicted finals.
-export function predictedWAM(subjects) {
-  const marks = [];
+export function predictedWAM(subjects, mode = 'simple') {
+  let weighted = 0;
+  let totalWeight = 0;
   for (const s of subjects) {
     const mark = subjectWAMMark(s, { includeProjected: true });
-    if (mark != null) marks.push(mark);
+    if (mark == null) continue;
+    const w = subjectWeightForWAM(s, mode);
+    weighted += mark * w;
+    totalWeight += w;
   }
-  if (marks.length === 0) return null;
-  return marks.reduce((a, b) => a + b, 0) / marks.length;
+  if (totalWeight === 0) return null;
+  return weighted / totalWeight;
 }
 
 // Average mark needed across `remainingCount` future subjects to reach `targetWAM`,

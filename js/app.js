@@ -17,7 +17,8 @@ import {
 } from './calculator.js';
 
 import {
-  applyCoursePlan, getKnownCoursePlan,
+  applyCoursePlan, getKnownCoursePlan, parsePayload,
+  consumeImportFragment, buildBookmarklet, extractCoursePlanId,
 } from './course-planner-import.js';
 
 // === State + persistence ===
@@ -158,8 +159,9 @@ function renderSetup() {
 function renderWAMSection() {
   const section = $('#wam-section');
   const subjects = allSubjects(state).map(x => x.subject);
-  const cur = currentWAM(subjects);
-  const pred = predictedWAM(subjects);
+  const wamMode = state.settings?.wamMode === 'official' ? 'official' : 'simple';
+  const cur = currentWAM(subjects, wamMode);
+  const pred = predictedWAM(subjects, wamMode);
 
   const completeCount = subjects.filter(isSubjectComplete).length;
   const inProgressCount = subjects.filter(s => !isSubjectComplete(s) && (s.assessments || []).length > 0).length;
@@ -215,11 +217,18 @@ function renderWAMSection() {
     targetOut = 'Enter a target WAM to see what average you need across remaining subjects.';
   }
 
+  const wamModeToggle = `
+    <div class="wam-mode-toggle">
+      <button type="button" class="${wamMode === 'simple' ? 'is-active' : ''}" data-wam-mode="simple" title="Simple average — every subject counts equally.">Simple</button>
+      <button type="button" class="${wamMode === 'official' ? 'is-active' : ''}" data-wam-mode="official" title="UoM transcript WAM — weighted by points × level (level-2+ subjects count double).">Official</button>
+    </div>
+  `;
+
   section.innerHTML = `
     ${coursePlanHtml}
     <div class="wam-card" id="wam-current">
       <div class="wam-card-header">
-        <span class="wam-card-title">Current WAM</span>
+        <span class="wam-card-title">Current WAM ${wamModeToggle}</span>
         ${curBand ? gradePill(cur) : '<span class="pill pill-incomplete">No marks yet</span>'}
       </div>
       <div class="wam-value">
@@ -261,6 +270,16 @@ function renderWAMSection() {
       <div class="wam-target-out ${targetClass}">${targetOut}</div>
     </div>
   `;
+
+  $$('.wam-mode-toggle button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.wamMode === 'official' ? 'official' : 'simple';
+      state.settings = state.settings || {};
+      state.settings.wamMode = mode;
+      persist();
+      renderWAMSection();
+    });
+  });
 
   $('#target-wam').addEventListener('input', (e) => {
     const v = e.target.value;
@@ -401,14 +420,19 @@ function renderTermCard(year, termKey) {
   const subjectRows = subjects.map(s => renderSubjectRow(year, termKey, s)).join('');
 
   const canAdd = subjects.length < t.maxSubjects;
+  const recommended = t.recommendedMax ?? t.maxSubjects;
+  const overload = subjects.length > recommended;
   return `
-    <div class="term-card">
+    <div class="term-card${overload ? ' is-overload' : ''}">
       <div class="term-head">
-        <h4>${t.label} <span class="term-tag">${subjects.length}/${t.maxSubjects}</span></h4>
+        <h4>${t.label} <span class="term-tag${overload ? ' tag-overload' : ''}">${subjects.length}/${t.maxSubjects}</span></h4>
         ${avg != null ? gradePill(avg, { kind: subjects.every(isSubjectComplete) ? 'actual' : 'predicted' }) : ''}
       </div>
       ${avg != null
         ? `<div class="term-summary"><span>Avg <b>${fmtMark(avg)}</b></span></div>`
+        : ''}
+      ${overload
+        ? `<div class="overload-warn" title="Standard load is ${recommended}. Overload normally requires faculty approval.">⚠️ Over standard load (${subjects.length} > ${recommended})</div>`
         : ''}
       <div class="subject-list">
         ${subjects.length === 0
@@ -500,55 +524,125 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
-function openCoursePlannerImport() {
+function openCoursePlannerImport(prefill = null) {
   modalSubjectRef = null;
   const root = $('#modal-root');
   document.body.style.overflow = 'hidden';
   root.hidden = false;
+
+  const returnUrl = location.origin + location.pathname;
+  const bookmarklet = buildBookmarklet(returnUrl);
+  const initialUrl = prefill?.url ? escapeHtml(prefill.url) : '';
+  const initialJson = prefill?.json ? escapeHtml(prefill.json) : '';
+  const initialError = prefill?.error || '';
+
   root.innerHTML = `
     <div class="modal modal-narrow" role="dialog" aria-modal="true" aria-labelledby="planner-import-title">
       <div class="modal-head">
-        <h3 id="planner-import-title">Import Course Planner</h3>
+        <h3 id="planner-import-title">Import from Course Planner</h3>
         <button class="btn-icon" id="planner-import-close" aria-label="Close">×</button>
       </div>
-      <form id="planner-import-form" class="modal-body">
-        <label class="field">
-          <span>Course Planner link</span>
-          <input id="planner-import-url" type="url" placeholder="https://course-planner.unimelb.edu.au/plan/..." autocomplete="off" />
-        </label>
+      <div class="modal-body">
+        <p class="hint">Pull your subjects directly from the University of Melbourne Course Planner. Three ways to do it:</p>
+
+        <details class="import-step" open>
+          <summary><strong>1. Use the bookmarklet</strong> <span class="step-tag">recommended</span></summary>
+          <div class="step-body">
+            <p class="hint">Drag this button to your bookmarks bar, then open your plan on Course Planner and click the bookmarklet:</p>
+            <p>
+              <a class="btn btn-secondary bookmarklet" id="planner-bookmarklet" href="${bookmarklet}" draggable="true" onclick="event.preventDefault(); alert('Drag this button to your bookmarks bar — clicking it from this page does nothing.');">📌 Send to WAM Calculator</a>
+            </p>
+            <ol class="hint-list">
+              <li>Drag the button above onto your bookmarks bar (or right-click → Bookmark this link).</li>
+              <li>Open your plan on <a href="https://course-planner.unimelb.edu.au/" target="_blank" rel="noopener">Course Planner</a> while signed in to your UoM account.</li>
+              <li>Click the bookmark — your plan opens here automatically.</li>
+            </ol>
+          </div>
+        </details>
+
+        <details class="import-step">
+          <summary><strong>2. Paste a share link</strong></summary>
+          <div class="step-body">
+            <p class="hint">If your plan link matches one we've curated, we'll import it directly. Otherwise we can't fetch the data — Course Planner needs your login session, so use the bookmarklet above.</p>
+            <label class="field">
+              <span>Course Planner link</span>
+              <input id="planner-import-url" type="url" inputmode="url" placeholder="https://course-planner.unimelb.edu.au/B-SCI/2025/plan/..." autocomplete="off" value="${initialUrl}" />
+            </label>
+            <button class="btn btn-secondary btn-sm" id="planner-import-link-btn" type="button">Try this link</button>
+          </div>
+        </details>
+
+        <details class="import-step">
+          <summary><strong>3. Paste exported JSON</strong></summary>
+          <div class="step-body">
+            <p class="hint">If you already saved a plan from another browser or shared it with a friend, paste it here.</p>
+            <label class="field">
+              <span>JSON payload</span>
+              <textarea id="planner-import-json" rows="5" placeholder='{"subjects":[…]}'>${initialJson}</textarea>
+            </label>
+            <button class="btn btn-secondary btn-sm" id="planner-import-json-btn" type="button">Import JSON</button>
+          </div>
+        </details>
+
         <label class="check-row">
           <input id="planner-import-replace" type="checkbox" checked />
           <span>Replace my current timeline</span>
         </label>
-        <div id="planner-import-error" class="weight-warn warn is-hidden"></div>
-        <div class="mode-note">Your shared Bachelor of Science Data Science plan imports directly, including subject codes, levels, points, breadth/discipline labels, and pass/fail subjects.</div>
-      </form>
+        <div id="planner-import-error" class="weight-warn warn ${initialError ? '' : 'is-hidden'}">${escapeHtml(initialError)}</div>
+      </div>
       <div class="modal-foot">
-        <button class="btn btn-secondary" id="planner-import-cancel" type="button">Cancel</button>
-        <button class="btn" id="planner-import-submit" type="submit" form="planner-import-form">Import subjects</button>
+        <button class="btn btn-secondary" id="planner-import-cancel" type="button">Close</button>
       </div>
     </div>
   `;
 
-  $('#planner-import-close').addEventListener('click', closeModal);
-  $('#planner-import-cancel').addEventListener('click', closeModal);
-  $('#planner-import-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const url = $('#planner-import-url').value;
+  const errorEl = $('#planner-import-error');
+  const showError = (msg) => {
+    errorEl.textContent = msg;
+    errorEl.classList.remove('is-hidden');
+  };
+  const tryApply = (plan) => {
     const replace = $('#planner-import-replace').checked;
-    const plan = getKnownCoursePlan(url);
-    const error = $('#planner-import-error');
-    if (!plan) {
-      error.textContent = 'That Course Planner link is not recognised yet. Paste the Data Science plan link you shared, or add a new known plan to this app.';
-      error.classList.remove('is-hidden');
+    if (replace && allSubjects(state).length > 0 && !confirm('Replace your current timeline with this course plan? Your current data will be cleared.')) return;
+    try {
+      applyCoursePlan(state, plan, { replace });
+    } catch (e) {
+      showError('Could not apply this plan: ' + e.message);
       return;
     }
-    if (replace && allSubjects(state).length > 0 && !confirm('Replace your current timeline with this course plan?')) return;
-    applyCoursePlan(state, plan, { replace });
     persist();
     closeModal();
     render();
     toast(`Imported ${plan.subjects.length} subjects from Course Planner`, 'success');
+  };
+
+  $('#planner-import-close').addEventListener('click', closeModal);
+  $('#planner-import-cancel').addEventListener('click', closeModal);
+  root.addEventListener('click', (e) => { if (e.target === root) closeModal(); });
+
+  $('#planner-import-link-btn').addEventListener('click', () => {
+    const url = $('#planner-import-url').value;
+    const id = extractCoursePlanId(url);
+    if (!id) {
+      showError("That doesn't look like a Course Planner share link. It should look like https://course-planner.unimelb.edu.au/.../plan/<id>.");
+      return;
+    }
+    const plan = getKnownCoursePlan(url);
+    if (!plan) {
+      showError(`That plan (${id.slice(0, 8)}…) isn't in our curated list. Course Planner requires your UoM login to fetch the data, so use the bookmarklet above instead.`);
+      return;
+    }
+    tryApply(plan);
+  });
+
+  $('#planner-import-json-btn').addEventListener('click', () => {
+    const text = $('#planner-import-json').value;
+    const plan = parsePayload(text);
+    if (!plan) {
+      showError("Couldn't read that JSON. Make sure it has a `subjects` array.");
+      return;
+    }
+    tryApply(plan);
   });
 }
 
@@ -1037,3 +1131,28 @@ document.addEventListener('keydown', (e) => {
 wireHeader();
 render();
 document.body.classList.add('app-ready');
+
+// If the bookmarklet (or a shared deep-link) redirected here with an import
+// payload, surface the plan in the import modal so the user can confirm.
+(function handleImportFragment() {
+  const incoming = consumeImportFragment();
+  if (!incoming) return;
+  const subjectCount = (incoming.subjects || []).length;
+  // If the user has nothing yet, just apply directly. If they have data, open
+  // the modal pre-populated so they can decide whether to replace.
+  const hasExisting = allSubjects(state).length > 0;
+  if (!hasExisting) {
+    try {
+      applyCoursePlan(state, incoming, { replace: true });
+      persist();
+      render();
+      toast(`Imported ${subjectCount} subjects from Course Planner`, 'success');
+    } catch (e) {
+      openCoursePlannerImport({ json: JSON.stringify(incoming, null, 2), error: 'Auto-import failed: ' + e.message });
+    }
+    return;
+  }
+  // Has existing data — let the user confirm via the modal.
+  openCoursePlannerImport({ json: JSON.stringify(incoming, null, 2) });
+  toast(`Course Planner data ready — review and import`, 'success');
+})();

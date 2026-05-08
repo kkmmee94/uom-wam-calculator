@@ -21,6 +21,15 @@ import {
   round,
 } from './calculator.js';
 
+import {
+  extractCoursePlanId,
+  getKnownCoursePlan,
+  parsePayload,
+  applyCoursePlan,
+} from './course-planner-import.js';
+
+import { defaultState, allSubjects } from './storage.js';
+
 const results = [];
 function approx(a, b, eps = 1e-6) {
   if (a == null && b == null) return true;
@@ -291,6 +300,125 @@ test('totalWeight validation case', () => {
 // --- Edge: zero-weight assessment ignored ---
 test('zero-weight assessment ignored in total', () => {
   assertEq(totalWeight([{ weight: 50, score: 80 }, { weight: 0, score: 100 }, { weight: 50, score: 60 }]), 100);
+});
+
+// --- Weighted WAM (UoM "official" mode) ---
+test('currentWAM: simple averages all subjects equally', () => {
+  const subjects = [
+    { completed: true, points: 12.5, level: 1, assessments: [{ weight: 100, score: 60 }] },
+    { completed: true, points: 12.5, level: 3, assessments: [{ weight: 100, score: 90 }] },
+  ];
+  // Simple: (60 + 90) / 2 = 75
+  assertApprox(currentWAM(subjects, 'simple'), 75);
+});
+
+test('currentWAM: official mode doubles level-2+ subjects', () => {
+  // Level-1 12.5pt subject: weight = 12.5
+  // Level-3 12.5pt subject: weight = 12.5 × 2 = 25
+  // (60×12.5 + 90×25) / (12.5 + 25) = (750 + 2250) / 37.5 = 80
+  const subjects = [
+    { completed: true, points: 12.5, level: 1, assessments: [{ weight: 100, score: 60 }] },
+    { completed: true, points: 12.5, level: 3, assessments: [{ weight: 100, score: 90 }] },
+  ];
+  assertApprox(currentWAM(subjects, 'official'), 80);
+});
+
+test('currentWAM: official respects custom credit points', () => {
+  // 25-point level-1 + 12.5-point level-1 → just points-weighted
+  // (70×25 + 80×12.5) / 37.5 = (1750 + 1000) / 37.5 = 73.333...
+  const subjects = [
+    { completed: true, points: 25,   level: 1, assessments: [{ weight: 100, score: 70 }] },
+    { completed: true, points: 12.5, level: 1, assessments: [{ weight: 100, score: 80 }] },
+  ];
+  assertApprox(currentWAM(subjects, 'official'), (70*25 + 80*12.5) / 37.5);
+});
+
+test('predictedWAM: simple vs official agree when all subjects share level/points', () => {
+  const subjects = [
+    { points: 12.5, level: 1, assessments: [{ weight: 100, score: 60 }] },
+    { points: 12.5, level: 1, assessments: [{ weight: 100, score: 80 }] },
+  ];
+  assertApprox(predictedWAM(subjects, 'simple'), 70);
+  assertApprox(predictedWAM(subjects, 'official'), 70);
+});
+
+// --- Course Planner import ---
+test('extractCoursePlanId: full URL', () => {
+  const id = extractCoursePlanId('https://course-planner.unimelb.edu.au/B-SCI/2025/plan/68a8884a78faaf004f8d17b7');
+  assertEq(id, '68a8884a78faaf004f8d17b7');
+});
+test('extractCoursePlanId: bare hex', () => {
+  assertEq(extractCoursePlanId('847dcf8c06db4b0587b5feb47c39e2da'), '847dcf8c06db4b0587b5feb47c39e2da');
+});
+test('extractCoursePlanId: garbage returns empty', () => {
+  assertEq(extractCoursePlanId('not a url'), '');
+});
+
+test('getKnownCoursePlan: matches the curated Data Science plan', () => {
+  const plan = getKnownCoursePlan('https://course-planner.unimelb.edu.au/B-SCI/2025/plan/847dcf8c06db4b0587b5feb47c39e2da');
+  assert(plan, 'should find the plan');
+  assertEq(plan.subjects.length, 24);
+});
+test('getKnownCoursePlan: unknown id returns null', () => {
+  const plan = getKnownCoursePlan('https://course-planner.unimelb.edu.au/B-SCI/2025/plan/68a8884a78faaf004f8d17b7');
+  assertEq(plan, null);
+});
+
+test('parsePayload: plain JSON', () => {
+  const p = parsePayload(JSON.stringify({
+    startYear: 2025, startSemester: 1,
+    subjects: [{ year: 2025, term: 'sem1', code: 'COMP10001', name: 'FoC' }],
+  }));
+  assert(p, 'parsed');
+  assertEq(p.subjects.length, 1);
+  assertEq(p.subjects[0].code, 'COMP10001');
+});
+test('parsePayload: base64 JSON', () => {
+  const json = JSON.stringify({ subjects: [{ year: 2025, term: 'sem1', code: 'A', name: 'A' }] });
+  const b64 = (typeof Buffer !== 'undefined') ? Buffer.from(json).toString('base64') : btoa(json);
+  const p = parsePayload(b64);
+  assert(p, 'parsed from base64');
+  assertEq(p.subjects[0].code, 'A');
+});
+test('parsePayload: garbage returns null', () => {
+  assertEq(parsePayload('not json'), null);
+  assertEq(parsePayload(''), null);
+});
+test('parsePayload: SCIE10005 is auto-tagged pass/fail', () => {
+  const p = parsePayload(JSON.stringify({
+    subjects: [{ year: 2025, term: 'sem2', code: 'SCIE10005', name: 'TSTW' }],
+  }));
+  assertEq(p.subjects[0].gradingMode, 'passFail');
+});
+
+test('applyCoursePlan: imports the curated plan into a fresh state', () => {
+  const state = defaultState();
+  const plan = getKnownCoursePlan('847dcf8c06db4b0587b5feb47c39e2da');
+  applyCoursePlan(state, plan);
+  const flat = allSubjects(state);
+  assertEq(flat.length, 24);
+  assertEq(state.coursePlan.major, 'Data Science');
+  assertEq(state.setup.startYear, 2025);
+  assertEq(state.setup.startSemester, 2);
+});
+
+test('applyCoursePlan: preserves pass/fail flag from registry', () => {
+  const state = defaultState();
+  const plan = getKnownCoursePlan('847dcf8c06db4b0587b5feb47c39e2da');
+  applyCoursePlan(state, plan);
+  const tstw = allSubjects(state).find(x => x.subject.code === 'SCIE10005');
+  assert(tstw, 'TSTW imported');
+  assertEq(tstw.subject.gradingMode, 'passFail');
+});
+
+test('applyCoursePlan: replace=false appends without clearing', () => {
+  const state = defaultState();
+  state.years = { '2024': { sem1: { subjects: [{ id: 'x', name: 'Existing', assessments: [] }] } } };
+  state.setup = { completed: true, startYear: 2024, startSemester: 1 };
+  const plan = getKnownCoursePlan('847dcf8c06db4b0587b5feb47c39e2da');
+  applyCoursePlan(state, plan, { replace: false });
+  // 1 existing + 24 imported = 25
+  assertEq(allSubjects(state).length, 25);
 });
 
 export function runTests() {

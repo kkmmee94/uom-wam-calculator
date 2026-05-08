@@ -4,11 +4,13 @@
 const STORAGE_KEY = 'uom-wam-calculator/v1';
 const SCHEMA_VERSION = 1;
 
+// Standard UoM load: Sem 1/2 = 4 subjects (overload to 5 by petition);
+// Summer/Winter = 2 subjects.
 export const TERMS = [
-  { key: 'summer', label: 'Summer Term', maxSubjects: 2, season: 'summer' },
-  { key: 'sem1',   label: 'Semester 1', maxSubjects: 5, season: 'autumn' },
-  { key: 'winter', label: 'Winter',     maxSubjects: 2, season: 'winter' },
-  { key: 'sem2',   label: 'Semester 2', maxSubjects: 5, season: 'spring' },
+  { key: 'summer', label: 'Summer Term', maxSubjects: 2, recommendedMax: 2, overloadMax: 2, season: 'summer' },
+  { key: 'sem1',   label: 'Semester 1',  maxSubjects: 5, recommendedMax: 4, overloadMax: 5, season: 'autumn' },
+  { key: 'winter', label: 'Winter',      maxSubjects: 2, recommendedMax: 2, overloadMax: 2, season: 'winter' },
+  { key: 'sem2',   label: 'Semester 2',  maxSubjects: 5, recommendedMax: 4, overloadMax: 5, season: 'spring' },
 ];
 
 export function termInfo(termKey) {
