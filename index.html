@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a2540" />
+  <meta name="description" content="WAM and grade calculator for University of Melbourne students." />
+  <title>UoM WAM Calculator</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="WAM" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="app-header">
+    <div class="container header-row">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">UoM</span>
+        <div class="brand-text">
+          <strong>WAM Calculator</strong>
+          <span class="brand-sub">Track grades. Predict your WAM.</span>
+        </div>
+      </div>
+      <nav class="header-actions" aria-label="App actions">
+        <button id="btn-export" class="btn btn-ghost" type="button" title="Export your data">Export</button>
+        <button id="btn-import" class="btn btn-ghost" type="button" title="Import data from file">Import</button>
+        <button id="btn-reset" class="btn btn-danger-ghost" type="button" title="Erase all data">Reset</button>
+        <input id="import-file" type="file" accept="application/json,.json" hidden />
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="container app-main">
+    <!-- Setup banner / first-run flow injected here when needed -->
+    <section id="setup-section" hidden></section>
+
+    <!-- Top WAM dashboard -->
+    <section id="wam-section" class="wam-section" aria-labelledby="wam-heading"></section>
+
+    <!-- Timeline (years/terms with subjects) -->
+    <section id="timeline-section" class="timeline-section" aria-labelledby="timeline-heading">
+      <div class="section-head">
+        <h2 id="timeline-heading">Your study timeline</h2>
+        <button id="btn-add-year" class="btn btn-secondary" type="button">+ Add another year</button>
+      </div>
+      <div id="timeline" class="timeline"></div>
+    </section>
+  </main>
+
+  <!-- Subject editor modal -->
+  <div id="modal-root" class="modal-root" hidden></div>
+
+  <!-- Toast notifications -->
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <footer class="app-footer">
+    <div class="container footer-row">
+      <small>Saved locally in your browser. Nothing is sent to any server.</small>
+      <small><a href="tests.html">Run calculation tests</a></small>
+    </div>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

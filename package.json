@@ -1,0 +1,11 @@
+{
+  "name": "uom-wam-calculator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Student-facing WAM and grade calculator for University of Melbourne students",
+  "type": "module",
+  "scripts": {
+    "test": "node js/run-tests-node.js",
+    "serve": "python3 -m http.server 8000"
+  }
+}

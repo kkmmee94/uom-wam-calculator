@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+.cache/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+
+# Local-only Claude Code config
+.claude/

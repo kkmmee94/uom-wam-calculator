@@ -1,0 +1,816 @@
+// Main app entry. Renders the UI from state, handles events, and persists.
+
+import {
+  loadState, saveState, clearState,
+  TERMS, termInfo, getTerm, allSubjects,
+  newSubject, newAssessment, buildTimeline,
+  exportJSON, importJSON,
+} from './storage.js';
+
+import {
+  GRADE_BANDS, TARGET_THRESHOLDS, gradeBandFor,
+  totalWeight, lockedInContribution, currentPerformance, remainingWeight,
+  requiredScoreFor, predictedFinal, finalMark, projectedFinal,
+  isSubjectComplete, currentWAM, predictedWAM, requiredAverageForWAM,
+  hasActualScore, hasPredictedScore, round,
+} from './calculator.js';
+
+// === State + persistence ===
+let state = loadState();
+
+function persist() { saveState(state); }
+function update(fn) {
+  fn(state);
+  persist();
+  render();
+}
+
+// === Helpers ===
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+function fmtMark(m, places = 2) {
+  if (m == null || Number.isNaN(m)) return '—';
+  return round(m, places).toFixed(places).replace(/\.00$/, '');
+}
+
+function gradePill(mark, opts = {}) {
+  if (mark == null) {
+    return `<span class="pill pill-incomplete">${opts.emptyLabel || '—'}</span>`;
+  }
+  const band = gradeBandFor(mark);
+  const cls = {
+    H1: 'pill-h1', H2A: 'pill-h2a', H2B: 'pill-h2b',
+    H3: 'pill-h3', P: 'pill-pass', N: 'pill-fail',
+  }[band.key] || '';
+  const label = opts.kind === 'predicted' ? `Pred. ${band.label}` : band.label;
+  return `<span class="pill ${cls}" title="${band.description} (${band.min}+)">${label}</span>`;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function toast(msg, kind = '') {
+  const root = $('#toasts');
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  el.textContent = msg;
+  root.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// === Setup flow ===
+function renderSetup() {
+  const section = $('#setup-section');
+  const wam = $('#wam-section');
+  const timeline = $('#timeline-section');
+  const sectionHead = $('#timeline-section .section-head');
+  if (state.setup.completed) {
+    section.hidden = true;
+    section.innerHTML = '';
+    wam.hidden = false;
+    timeline.hidden = false;
+    if (sectionHead) sectionHead.hidden = false;
+    return;
+  }
+  // First-time prompt — hide everything else.
+  section.hidden = false;
+  wam.hidden = true;
+  timeline.hidden = true;
+
+  const currentYear = new Date().getFullYear();
+  const yearOptions = [];
+  for (let y = currentYear + 1; y >= currentYear - 8; y--) {
+    yearOptions.push(`<option value="${y}"${y === currentYear ? ' selected' : ''}>${y}</option>`);
+  }
+
+  section.innerHTML = `
+    <div class="setup-banner" role="region" aria-labelledby="setup-h">
+      <h2 id="setup-h">Welcome — let's set up your timeline</h2>
+      <p>Tell us when you started at the University of Melbourne so we can lay out your semesters. You can change this later.</p>
+      <form class="setup-form" id="setup-form">
+        <label class="field">
+          <span>Start year</span>
+          <select name="startYear">${yearOptions.join('')}</select>
+        </label>
+        <label class="field">
+          <span>Started in</span>
+          <select name="startSemester">
+            <option value="1">Semester 1</option>
+            <option value="2">Semester 2</option>
+          </select>
+        </label>
+        <div class="full" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
+          <button class="btn" type="submit">Get started</button>
+          <button class="btn btn-secondary" type="button" id="setup-import">Import existing data</button>
+        </div>
+      </form>
+    </div>
+  `;
+  $('#setup-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    update((s) => {
+      s.setup = {
+        completed: true,
+        startYear: Number(fd.get('startYear')),
+        startSemester: Number(fd.get('startSemester')),
+      };
+    });
+  });
+  $('#setup-import').addEventListener('click', () => $('#import-file').click());
+}
+
+// === WAM dashboard ===
+function renderWAMSection() {
+  const section = $('#wam-section');
+  const subjects = allSubjects(state).map(x => x.subject);
+  const cur = currentWAM(subjects);
+  const pred = predictedWAM(subjects);
+
+  const completeCount = subjects.filter(isSubjectComplete).length;
+  const inProgressCount = subjects.filter(s => !isSubjectComplete(s) && (s.assessments || []).length > 0).length;
+
+  const curBand = cur != null ? gradeBandFor(cur) : null;
+  const predBand = pred != null ? gradeBandFor(pred) : null;
+
+  // WAM target planning: how many subjects remain in your degree?
+  // Derive a simple estimate: degrees are typically 24 subjects (full 3-year UoM).
+  // Use whichever the user told us, or default 24.
+  const totalDegree = state.degreeSubjectCount || 24;
+  const completedMarks = subjects.filter(isSubjectComplete)
+    .map(s => finalMark(s.assessments || []))
+    .filter(x => x != null);
+  const remainingDegreeSubjects = Math.max(0, totalDegree - completedMarks.length);
+
+  const target = state.targetWAM ?? '';
+  let targetOut = '';
+  let targetClass = '';
+  if (target !== '' && target != null && !Number.isNaN(Number(target))) {
+    const t = Number(target);
+    const r = requiredAverageForWAM(completedMarks, remainingDegreeSubjects, t);
+    if (r.alreadyReached) {
+      targetClass = 'ok';
+      targetOut = `You've already met your target — even averaging 0 on the remaining ${remainingDegreeSubjects} subjects keeps you above ${t} WAM.`;
+    } else if (r.impossible) {
+      targetClass = 'danger';
+      targetOut = `Reaching ${t} WAM is no longer possible — you'd need to average ${fmtMark(r.required)} across the remaining ${remainingDegreeSubjects} subjects.`;
+    } else if (r.noRemaining) {
+      targetClass = 'warn';
+      targetOut = `No remaining subjects to lift your WAM. Adjust the degree subject count or your target.`;
+    } else {
+      targetClass = 'warn';
+      const gradeBand = gradeBandFor(r.required);
+      targetOut = `You need to average <b>${fmtMark(r.required)}</b> (${gradeBand.label}) across the remaining <b>${remainingDegreeSubjects}</b> subjects.`;
+    }
+  } else {
+    targetOut = 'Enter a target WAM to see what average you need across remaining subjects.';
+  }
+
+  section.innerHTML = `
+    <div class="wam-card" id="wam-current">
+      <div class="wam-card-header">
+        <span class="wam-card-title">Current WAM</span>
+        ${curBand ? gradePill(cur) : '<span class="pill pill-incomplete">No marks yet</span>'}
+      </div>
+      <div class="wam-value">
+        ${cur == null
+          ? '<span class="empty">No completed subjects yet</span>'
+          : `${fmtMark(cur)}<span class="unit">/ 100</span>`}
+      </div>
+      <div class="wam-meta">
+        <span><b>${completeCount}</b> completed</span>
+        <span><b>${inProgressCount}</b> in progress</span>
+      </div>
+    </div>
+
+    <div class="wam-card" id="wam-predicted">
+      <div class="wam-card-header">
+        <span class="wam-card-title">Predicted WAM</span>
+        ${predBand ? gradePill(pred, { kind: 'predicted' }) : '<span class="pill pill-incomplete">—</span>'}
+      </div>
+      <div class="wam-value">
+        ${pred == null
+          ? '<span class="empty">Add scores to see a prediction</span>'
+          : `${fmtMark(pred)}<span class="unit">/ 100</span>`}
+      </div>
+      <div class="wam-meta">
+        <span>Includes in-progress subjects projected from current performance and predictions.</span>
+      </div>
+    </div>
+
+    <div class="wam-target">
+      <div class="wam-target-row">
+        <label for="target-wam">Target WAM</label>
+        <input id="target-wam" type="number" min="0" max="100" step="0.1" value="${target}" placeholder="—" />
+        <div class="spacer"></div>
+        <label class="field" style="flex-direction: row; align-items: center; gap: 6px;">
+          <span style="font-size:13px; color: var(--text-soft); font-weight: 500;">Subjects in degree</span>
+          <input id="degree-count" type="number" min="1" max="40" step="1" value="${totalDegree}" style="width: 70px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-elev); color: var(--text); font: inherit;" />
+        </label>
+      </div>
+      <div class="wam-target-out ${targetClass}">${targetOut}</div>
+    </div>
+  `;
+
+  $('#target-wam').addEventListener('input', (e) => {
+    const v = e.target.value;
+    state.targetWAM = v === '' ? null : Number(v);
+    persist();
+    renderWAMSection();
+  });
+  $('#degree-count').addEventListener('input', (e) => {
+    const v = Math.max(1, Math.min(40, Number(e.target.value) || 24));
+    state.degreeSubjectCount = v;
+    persist();
+    renderWAMSection();
+  });
+}
+
+// === Timeline (years/terms/subjects) ===
+function renderTimeline() {
+  const root = $('#timeline');
+  if (!state.setup.startYear) {
+    root.innerHTML = '';
+    return;
+  }
+  // Compute a timeline that covers max(default lookahead, any year already used + 1).
+  const usedYears = Object.keys(state.years || {}).map(Number).filter(y => !Number.isNaN(y));
+  const lookaheadFromState = usedYears.length
+    ? Math.max(1, Math.max(...usedYears) - state.setup.startYear + 2)
+    : 0;
+  const lookahead = Math.max(state.lookaheadYears || 4, lookaheadFromState);
+  state.lookaheadYears = lookahead;
+
+  const timeline = buildTimeline(state.setup.startYear, state.setup.startSemester, lookahead);
+
+  // Group by year, preserving term order.
+  const byYear = new Map();
+  for (const c of timeline) {
+    if (!byYear.has(c.year)) byYear.set(c.year, []);
+    byYear.get(c.year).push(c.term);
+  }
+
+  const html = [];
+  for (const [year, terms] of byYear.entries()) {
+    // Year-level summary
+    const yearSubjects = [];
+    for (const tk of terms) {
+      const term = state.years?.[year]?.[tk];
+      if (term && term.subjects) yearSubjects.push(...term.subjects);
+    }
+    const completedCount = yearSubjects.filter(isSubjectComplete).length;
+    const totalCount = yearSubjects.length;
+
+    const termCards = terms.map(tk => renderTermCard(year, tk)).join('');
+    html.push(`
+      <div class="year-block">
+        <div class="year-head">
+          <h3>${year}</h3>
+          <span class="year-summary">${completedCount}/${totalCount} subjects complete</span>
+        </div>
+        <div class="terms-grid">${termCards}</div>
+      </div>
+    `);
+  }
+  root.innerHTML = html.join('');
+
+  // Wire up subject and add-subject clicks.
+  $$('.subject-row').forEach(el => {
+    el.addEventListener('click', () => {
+      const year = Number(el.dataset.year);
+      const term = el.dataset.term;
+      const id = el.dataset.id;
+      openSubjectEditor(year, term, id);
+    });
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        el.click();
+      }
+    });
+  });
+  $$('.add-subject-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const year = Number(el.dataset.year);
+      const term = el.dataset.term;
+      const t = termInfo(term);
+      update((s) => {
+        const t2 = getTerm(s, year, term);
+        if (t2.subjects.length >= t.maxSubjects) return;
+        const subj = newSubject(`Subject ${t2.subjects.length + 1}`);
+        t2.subjects.push(subj);
+        // Open editor straight away
+        setTimeout(() => openSubjectEditor(year, term, subj.id), 0);
+      });
+    });
+  });
+}
+
+function renderTermCard(year, termKey) {
+  const t = termInfo(termKey);
+  const term = state.years?.[year]?.[termKey] || { subjects: [] };
+  const subjects = term.subjects || [];
+
+  // Term-level stats
+  const finals = [];
+  let inProgress = 0;
+  for (const s of subjects) {
+    const fm = finalMark(s.assessments || []);
+    if (fm != null) finals.push(fm);
+    else if ((s.assessments || []).some(hasActualScore) || (s.assessments || []).some(hasPredictedScore)) inProgress++;
+  }
+  const proj = subjects.map(s => {
+    const fm = finalMark(s.assessments || []);
+    if (fm != null) return fm;
+    return projectedFinal(s);
+  }).filter(x => x != null);
+  const avg = proj.length ? proj.reduce((a, b) => a + b, 0) / proj.length : null;
+
+  const subjectRows = subjects.map(s => renderSubjectRow(year, termKey, s)).join('');
+
+  const canAdd = subjects.length < t.maxSubjects;
+  return `
+    <div class="term-card">
+      <div class="term-head">
+        <h4>${t.label} <span class="term-tag">${subjects.length}/${t.maxSubjects}</span></h4>
+        ${avg != null ? gradePill(avg, { kind: subjects.every(isSubjectComplete) ? 'actual' : 'predicted' }) : ''}
+      </div>
+      ${avg != null
+        ? `<div class="term-summary"><span>Avg <b>${fmtMark(avg)}</b></span></div>`
+        : ''}
+      <div class="subject-list">
+        ${subjects.length === 0
+          ? `<div class="hint" style="padding: 4px 2px;">No subjects yet.</div>`
+          : subjectRows}
+        ${canAdd
+          ? `<button class="add-subject-btn" data-year="${year}" data-term="${termKey}" type="button">+ Add subject</button>`
+          : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderSubjectRow(year, termKey, subj) {
+  const assessments = subj.assessments || [];
+  const total = totalWeight(assessments);
+  const fm = finalMark(assessments);
+  const proj = projectedFinal(subj);
+  const complete = isSubjectComplete(subj);
+
+  // At-risk: a Pass is mathematically out of reach, or projection is below 50.
+  let atRisk = false;
+  const passNeeded = requiredScoreFor(assessments, 50);
+  if (passNeeded.impossible) atRisk = true;
+  if (proj != null && proj < 50) atRisk = true;
+
+  // Mark display
+  let markHtml = '';
+  let pillHtml = '';
+  if (fm != null) {
+    markHtml = `<span class="mark-num">${fmtMark(fm)}</span>`;
+    pillHtml = gradePill(fm);
+  } else if (proj != null) {
+    markHtml = `<span class="mark-num">${fmtMark(proj)}</span>`;
+    pillHtml = gradePill(proj, { kind: 'predicted' });
+  } else {
+    markHtml = `<span class="mark-num empty">—</span>`;
+    pillHtml = `<span class="pill pill-incomplete">No data</span>`;
+  }
+
+  const cls = ['subject-row'];
+  if (complete) cls.push('subject-completed');
+  if (atRisk) cls.push('subject-at-risk');
+
+  const detail = [];
+  if (subj.code) detail.push(escapeHtml(subj.code));
+  if (assessments.length) detail.push(`${assessments.length} assessment${assessments.length === 1 ? '' : 's'}`);
+  if (total !== 100 && assessments.length > 0) detail.push(`weights: ${total}%`);
+
+  return `
+    <div class="${cls.join(' ')}" data-year="${year}" data-term="${termKey}" data-id="${subj.id}" tabindex="0" role="button" aria-label="Edit ${escapeHtml(subj.name)}">
+      <div class="subject-info">
+        <div class="subject-name">${escapeHtml(subj.name) || 'Untitled subject'}</div>
+        <div class="subject-detail">${detail.join(' · ') || ' '}</div>
+      </div>
+      <div class="subject-mark">
+        ${markHtml}
+        ${pillHtml}
+      </div>
+    </div>
+  `;
+}
+
+// === Subject editor modal ===
+let modalSubjectRef = null; // { year, term, id }
+
+function openSubjectEditor(year, term, id) {
+  modalSubjectRef = { year, term, id };
+  renderModal();
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal() {
+  modalSubjectRef = null;
+  $('#modal-root').hidden = true;
+  $('#modal-root').innerHTML = '';
+  document.body.style.overflow = '';
+}
+
+function getModalSubject() {
+  if (!modalSubjectRef) return null;
+  const { year, term, id } = modalSubjectRef;
+  const t = state.years?.[year]?.[term];
+  if (!t) return null;
+  return t.subjects.find(s => s.id === id) || null;
+}
+
+function renderModal() {
+  const root = $('#modal-root');
+  if (!modalSubjectRef) {
+    root.hidden = true;
+    root.innerHTML = '';
+    return;
+  }
+  const subj = getModalSubject();
+  if (!subj) {
+    closeModal();
+    return;
+  }
+  const { year, term } = modalSubjectRef;
+  const tInfo = termInfo(term);
+
+  const assessments = subj.assessments || [];
+  const total = totalWeight(assessments);
+  const fm = finalMark(assessments);
+  const proj = projectedFinal(subj);
+  const cur = currentPerformance(assessments);
+  const lockedWeight = assessments.reduce((s, a) => s + (hasActualScore(a) ? Number(a.weight) || 0 : 0), 0);
+  const locked = lockedInContribution(assessments);
+
+  // Required scores for each band
+  const requiredCells = TARGET_THRESHOLDS.map(thr => {
+    const r = requiredScoreFor(assessments, thr.min);
+    let cls = '', body = '', helper = '';
+    if (r.alreadyReached) {
+      cls = 'ok';
+      body = '<span class="num">Already</span>';
+      helper = `Already reached ${thr.label} (${thr.min}+).`;
+    } else if (r.impossible) {
+      cls = 'danger';
+      body = `<span class="num">${fmtMark(r.required)}</span>`;
+      helper = `Out of reach — would need &gt;100.`;
+    } else if (r.noRemaining) {
+      cls = 'danger';
+      body = '<span class="num">—</span>';
+      helper = `No remaining assessments.`;
+    } else {
+      const reqBand = gradeBandFor(r.required);
+      if (r.required >= 90) cls = 'warn';
+      else if (r.required >= 75) cls = '';
+      else cls = 'ok';
+      body = `<span class="num">${fmtMark(r.required, 1)}</span>`;
+      helper = `Avg across remaining ${remainingWeight(assessments)}% of weight (≈ ${reqBand.label})`;
+    }
+    return `
+      <div class="required-cell ${cls}">
+        <div class="target"><span>${thr.label}</span><span>${thr.min}+</span></div>
+        ${body}
+        <div class="helper">${helper}</div>
+      </div>
+    `;
+  }).join('');
+
+  // Assessments table (desktop) + stack (mobile)
+  const rowsHtml = assessments.map((a, i) => `
+    <tr data-aid="${a.id}">
+      <td><input type="text" data-field="name" value="${escapeHtml(a.name)}" placeholder="e.g. Assignment ${i + 1}" /></td>
+      <td class="col-num"><input type="number" class="input-num" data-field="weight" value="${a.weight ?? ''}" min="0" max="100" step="0.1" placeholder="—" /></td>
+      <td class="col-num"><input type="number" class="input-num" data-field="score" value="${a.score ?? ''}" min="0" max="100" step="0.1" placeholder="—" /></td>
+      <td class="col-num"><input type="number" class="input-num" data-field="predicted" value="${a.predicted ?? ''}" min="0" max="100" step="0.1" placeholder="—" /></td>
+      <td class="col-actions"><button class="btn-icon btn-del" type="button" aria-label="Delete assessment">×</button></td>
+    </tr>
+  `).join('');
+
+  const stackHtml = assessments.map((a, i) => `
+    <div class="assessment-card" data-aid="${a.id}">
+      <div class="field-with-label full">
+        <label>Assessment name</label>
+        <input type="text" data-field="name" value="${escapeHtml(a.name)}" placeholder="e.g. Assignment ${i + 1}" />
+      </div>
+      <div class="row">
+        <div class="field-with-label">
+          <label>Weight (%)</label>
+          <input type="number" class="input-num" data-field="weight" value="${a.weight ?? ''}" min="0" max="100" step="0.1" placeholder="—" />
+        </div>
+        <div class="field-with-label">
+          <label>Actual score</label>
+          <input type="number" class="input-num" data-field="score" value="${a.score ?? ''}" min="0" max="100" step="0.1" placeholder="—" />
+        </div>
+        <div class="field-with-label full">
+          <label>Predicted score (what-if)</label>
+          <input type="number" class="input-num" data-field="predicted" value="${a.predicted ?? ''}" min="0" max="100" step="0.1" placeholder="—" />
+        </div>
+      </div>
+      <div class="delete-row">
+        <button class="btn btn-secondary btn-sm btn-del" type="button">Remove</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Weight validation message
+  let weightMsg = '';
+  if (assessments.length === 0) {
+    weightMsg = '';
+  } else if (total === 100) {
+    weightMsg = `<div class="weight-warn ok">Weights total <b>100%</b>.</div>`;
+  } else {
+    weightMsg = `<div class="weight-warn warn">Weights total <b>${fmtMark(total, 1)}%</b> — these should add to 100%.</div>`;
+  }
+
+  // At-risk warning if any required score is impossible
+  const passReq = requiredScoreFor(assessments, 50);
+  let atRiskMsg = '';
+  if (passReq.impossible) {
+    atRiskMsg = `<div class="weight-warn warn">⚠️ A passing mark is no longer mathematically possible.</div>`;
+  }
+
+  // Display strings for the 4 summary cells. We avoid showing the same number twice
+  // (final-when-incomplete and projected are identical), so we instead show the
+  // remaining-weight percentage as the fourth metric.
+  const finalMarkDisplay = fm != null
+    ? `<span>${fmtMark(fm)}</span><small>${gradeBandFor(fm).label}</small>`
+    : (proj != null ? `<span>${fmtMark(proj)}</span><small>predicted ${gradeBandFor(proj).label}</small>` : '<span class="empty">—</span>');
+  const curDisplay = cur != null
+    ? `<span>${fmtMark(cur)}</span><small>${fmtMark(lockedWeight, 0)}% done</small>`
+    : '<span class="empty">—</span>';
+  const lockedDisplay = locked > 0
+    ? `<span>${fmtMark(locked)}</span><small>of 100</small>`
+    : '<span class="empty">—</span>';
+  const remW = remainingWeight(assessments);
+  const remainingDisplay = assessments.length === 0
+    ? '<span class="empty">—</span>'
+    : `<span>${fmtMark(remW, 0)}<small>%</small></span><small>still to score</small>`;
+
+  root.hidden = false;
+  root.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h3 id="modal-title">Edit subject</h3>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label class="toggle">
+            <input type="checkbox" id="completed-toggle" ${subj.completed ? 'checked' : ''} />
+            <span class="track"></span>
+            <span>Mark as completed</span>
+          </label>
+          <button class="btn-icon" id="modal-close" aria-label="Close">×</button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <div class="hint">${tInfo.label} ${year}</div>
+
+        <div class="subject-meta-form">
+          <label class="field">
+            <span>Subject name</span>
+            <input type="text" id="subj-name" value="${escapeHtml(subj.name)}" placeholder="e.g. Calculus 2" />
+          </label>
+          <label class="field">
+            <span>Subject code (optional)</span>
+            <input type="text" id="subj-code" value="${escapeHtml(subj.code)}" placeholder="e.g. MAST10006" />
+          </label>
+        </div>
+
+        <div class="subject-summary">
+          <div class="summary-cell">
+            <span class="lbl">${fm != null ? 'Final mark' : 'Projected mark'}</span>
+            <span class="val">${finalMarkDisplay}</span>
+          </div>
+          <div class="summary-cell">
+            <span class="lbl">Locked-in</span>
+            <span class="val">${lockedDisplay}</span>
+          </div>
+          <div class="summary-cell">
+            <span class="lbl">Current avg</span>
+            <span class="val">${curDisplay}</span>
+          </div>
+          <div class="summary-cell">
+            <span class="lbl">Remaining</span>
+            <span class="val">${remainingDisplay}</span>
+          </div>
+        </div>
+
+        <h4 style="margin: 6px 0 0; font-size: 14px;">Assessments</h4>
+        <table class="assessments-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="col-num">Weight%</th>
+              <th class="col-num">Score</th>
+              <th class="col-num">Predicted</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || `<tr><td colspan="5" class="assessments-empty">No assessments yet — add one below.</td></tr>`}
+          </tbody>
+        </table>
+        <div class="assessments-stack">
+          ${stackHtml || `<div class="assessments-empty">No assessments yet — add one below.</div>`}
+        </div>
+        <div>
+          <button class="btn btn-secondary btn-sm" id="add-assessment" type="button">+ Add assessment</button>
+        </div>
+        ${weightMsg}
+        ${atRiskMsg}
+
+        <h4 style="margin: 6px 0 0; font-size: 14px;">What you'd need on remaining assessments</h4>
+        <div class="required-grid">
+          ${requiredCells}
+        </div>
+
+        <label class="field">
+          <span>Notes (optional)</span>
+          <textarea id="subj-notes" rows="3" placeholder="Anything you want to remember about this subject…">${escapeHtml(subj.notes || '')}</textarea>
+        </label>
+      </div>
+
+      <div class="modal-foot">
+        <button class="btn btn-danger-ghost" id="delete-subject" type="button" style="margin-right: auto;">Delete subject</button>
+        <button class="btn btn-secondary" id="modal-cancel" type="button">Close</button>
+      </div>
+    </div>
+  `;
+
+  // Wire up — modal-level
+  $('#modal-close').addEventListener('click', closeModal);
+  $('#modal-cancel').addEventListener('click', closeModal);
+  root.addEventListener('click', (e) => {
+    if (e.target === root) closeModal();
+  });
+
+  // Subject-level edits
+  const debounceSave = debounce(() => { persist(); renderTimeline(); renderWAMSection(); }, 300);
+  $('#subj-name').addEventListener('input', (e) => { subj.name = e.target.value; debounceSave(); });
+  $('#subj-code').addEventListener('input', (e) => { subj.code = e.target.value; debounceSave(); });
+  $('#subj-notes').addEventListener('input', (e) => { subj.notes = e.target.value; debounceSave(); });
+
+  $('#completed-toggle').addEventListener('change', (e) => {
+    subj.completed = e.target.checked;
+    persist();
+    renderModal(); // re-render to reflect badge changes
+    renderTimeline();
+    renderWAMSection();
+  });
+
+  $('#add-assessment').addEventListener('click', () => {
+    subj.assessments = subj.assessments || [];
+    subj.assessments.push(newAssessment(`Assessment ${subj.assessments.length + 1}`));
+    persist();
+    renderModal();
+    renderTimeline();
+    renderWAMSection();
+  });
+
+  $('#delete-subject').addEventListener('click', () => {
+    if (!confirm(`Delete "${subj.name}"? This cannot be undone.`)) return;
+    update((s) => {
+      const term = s.years?.[modalSubjectRef.year]?.[modalSubjectRef.term];
+      if (!term) return;
+      term.subjects = term.subjects.filter(x => x.id !== subj.id);
+    });
+    closeModal();
+  });
+
+  // Assessment row edits — wire both table and stack views.
+  const wireAssessmentNode = (node) => {
+    const aid = node.dataset.aid;
+    const a = subj.assessments.find(x => x.id === aid);
+    if (!a) return;
+
+    node.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const f = inp.dataset.field;
+        if (f === 'name') a.name = inp.value;
+        else {
+          const v = inp.value;
+          a[f] = v === '' ? null : Number(v);
+        }
+        debounceSave();
+        // Re-render summary + required grid live without rebuilding the whole modal.
+        // Simpler: just re-render the modal on a debounce.
+        debouncedRemodal();
+      });
+    });
+
+    node.querySelectorAll('.btn-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        subj.assessments = subj.assessments.filter(x => x.id !== aid);
+        persist();
+        renderModal();
+        renderTimeline();
+        renderWAMSection();
+      });
+    });
+  };
+  $$('.assessments-table tr[data-aid]').forEach(wireAssessmentNode);
+  $$('.assessments-stack .assessment-card[data-aid]').forEach(wireAssessmentNode);
+}
+
+const debouncedRemodal = debounce(() => {
+  // Save which field had focus so editing doesn't get interrupted.
+  const active = document.activeElement;
+  const aid = active?.closest('[data-aid]')?.dataset.aid;
+  const field = active?.dataset.field;
+  const sel = (active && 'selectionStart' in active) ? active.selectionStart : null;
+  renderModal();
+  if (aid && field) {
+    const candidates = $$(`[data-aid="${aid}"] [data-field="${field}"]`);
+    // Pick one visible to the user — table row OR stack card (only one is visible at a time).
+    const visible = candidates.find(el => el.offsetParent !== null) || candidates[0];
+    if (visible) {
+      visible.focus();
+      if (sel != null && 'setSelectionRange' in visible) {
+        try { visible.setSelectionRange(sel, sel); } catch {}
+      }
+    }
+  }
+}, 250);
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// === Header actions ===
+function wireHeader() {
+  $('#btn-export').addEventListener('click', () => {
+    const data = exportJSON(state);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `uom-wam-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('Exported your data', 'success');
+  });
+
+  $('#btn-import').addEventListener('click', () => $('#import-file').click());
+  $('#import-file').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-import of same file
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const next = importJSON(text);
+      state = next;
+      persist();
+      render();
+      toast('Imported your data', 'success');
+    } catch (err) {
+      toast('Import failed: ' + err.message, 'error');
+    }
+  });
+
+  $('#btn-reset').addEventListener('click', () => {
+    if (!confirm('Erase ALL of your data? This cannot be undone.')) return;
+    clearState();
+    state = loadState();
+    render();
+    toast('All data cleared', 'success');
+  });
+
+  $('#btn-add-year').addEventListener('click', () => {
+    state.lookaheadYears = (state.lookaheadYears || 4) + 1;
+    persist();
+    renderTimeline();
+  });
+}
+
+// === Render entry ===
+function render() {
+  renderSetup();
+  if (state.setup.completed) {
+    renderWAMSection();
+    renderTimeline();
+  }
+}
+
+// Keyboard: ESC closes modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && modalSubjectRef) {
+    closeModal();
+  }
+});
+
+wireHeader();
+render();

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="WAM Calculator">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a2540"/>
+      <stop offset="1" stop-color="#1e3a5f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#g)"/>
+  <g fill="#fff" font-family="-apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif" font-weight="800">
+    <text x="50%" y="46%" text-anchor="middle" font-size="160" letter-spacing="-4">WAM</text>
+    <text x="50%" y="74%" text-anchor="middle" font-size="60" opacity="0.78" letter-spacing="6">UoM</text>
+  </g>
+  <circle cx="384" cy="128" r="40" fill="#22c55e"/>
+</svg>
