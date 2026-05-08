@@ -94,6 +94,12 @@ test('requiredScoreFor: typical', () => {
   assert(r.achievable, 'should be achievable');
   assertApprox(r.required, (70 - 32) * 100 / 60);
 });
+test('requiredScoreFor: treats unentered weight as remaining', () => {
+  const a = [{ weight: 40, score: 80 }];
+  const r = requiredScoreFor(a, 70);
+  assert(r.achievable, 'should be achievable');
+  assertApprox(r.required, (70 - 32) * 100 / 60);
+});
 test('requiredScoreFor: already reached', () => {
   // locked 90 with 90% weight done. for 50: required negative -> alreadyReached
   const a = [{ weight: 90, score: 100 }, { weight: 10 }];
@@ -143,11 +149,23 @@ test('finalMark: complete', () => {
   const a = [{ weight: 30, score: 80 }, { weight: 70, score: 60 }];
   assertApprox(finalMark(a), 66); // 24 + 42
 });
+test('finalMark: requires weights to total 100', () => {
+  const a = [{ weight: 40, score: 80 }];
+  assertEq(finalMark(a), null);
+});
 
 test('projectedFinal: extrapolates current performance', () => {
   // 40% at 80 actual. remaining 60. project at current 80 -> 80
   const subj = { assessments: [{ weight: 40, score: 80 }, { weight: 60 }] };
   assertApprox(projectedFinal(subj), 80);
+});
+test('projectedFinal: treats unentered weight as remaining', () => {
+  const subj = { assessments: [{ weight: 40, score: 80 }] };
+  assertApprox(projectedFinal(subj), 80);
+});
+test('projectedFinal: can use predictions when no actual marks exist', () => {
+  const subj = { assessments: [{ weight: 60, predicted: 70 }] };
+  assertApprox(projectedFinal(subj), 70);
 });
 test('projectedFinal: predictions override projection', () => {
   // 40% at 80 actual, 30% predicted at 60. remaining 30 -> at current 80
@@ -220,6 +238,9 @@ test('isSubjectComplete: by flag', () => {
 });
 test('isSubjectComplete: by all scores known', () => {
   assert(isSubjectComplete({ assessments: [{ weight: 100, score: 80 }] }));
+});
+test('isSubjectComplete: scored partial weights are still incomplete', () => {
+  assert(!isSubjectComplete({ assessments: [{ weight: 40, score: 80 }] }));
 });
 test('isSubjectComplete: missing score -> incomplete', () => {
   assert(!isSubjectComplete({ assessments: [{ weight: 50, score: 80 }, { weight: 50 }] }));

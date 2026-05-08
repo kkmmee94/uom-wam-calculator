@@ -53,6 +53,13 @@ function escapeHtml(s) {
   }[c]));
 }
 
+function toNullableNumber(value, min = 0, max = 100) {
+  if (value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+
 function toast(msg, kind = '') {
   const root = $('#toasts');
   const el = document.createElement('div');
@@ -104,15 +111,16 @@ function renderSetup() {
           </select>
         </label>
         <div class="full" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
-          <button class="btn" type="submit">Get started</button>
+          <button class="btn" type="submit" id="setup-submit">Get started</button>
           <button class="btn btn-secondary" type="button" id="setup-import">Import existing data</button>
         </div>
       </form>
     </div>
   `;
-  $('#setup-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
+
+  const setupForm = $('#setup-form');
+  const completeSetup = (form) => {
+    const fd = new FormData(form);
     update((s) => {
       s.setup = {
         completed: true,
@@ -120,6 +128,15 @@ function renderSetup() {
         startSemester: Number(fd.get('startSemester')),
       };
     });
+  };
+
+  setupForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    completeSetup(e.currentTarget);
+  });
+  $('#setup-submit').addEventListener('click', (e) => {
+    e.preventDefault();
+    completeSetup(setupForm);
   });
   $('#setup-import').addEventListener('click', () => $('#import-file').click());
 }
@@ -205,11 +222,11 @@ function renderWAMSection() {
     <div class="wam-target">
       <div class="wam-target-row">
         <label for="target-wam">Target WAM</label>
-        <input id="target-wam" type="number" min="0" max="100" step="0.1" value="${target}" placeholder="—" />
+        <input id="target-wam" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="${target}" placeholder="—" />
         <div class="spacer"></div>
         <label class="field" style="flex-direction: row; align-items: center; gap: 6px;">
           <span style="font-size:13px; color: var(--text-soft); font-weight: 500;">Subjects in degree</span>
-          <input id="degree-count" type="number" min="1" max="40" step="1" value="${totalDegree}" style="width: 70px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-elev); color: var(--text); font: inherit;" />
+          <input id="degree-count" type="number" min="1" max="40" step="1" inputmode="numeric" value="${totalDegree}" style="width: 70px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-elev); color: var(--text); font: inherit;" />
         </label>
       </div>
       <div class="wam-target-out ${targetClass}">${targetOut}</div>
@@ -218,14 +235,18 @@ function renderWAMSection() {
 
   $('#target-wam').addEventListener('input', (e) => {
     const v = e.target.value;
-    state.targetWAM = v === '' ? null : Number(v);
+    state.targetWAM = toNullableNumber(v);
     persist();
+  });
+  $('#target-wam').addEventListener('change', () => {
     renderWAMSection();
   });
   $('#degree-count').addEventListener('input', (e) => {
     const v = Math.max(1, Math.min(40, Number(e.target.value) || 24));
     state.degreeSubjectCount = v;
     persist();
+  });
+  $('#degree-count').addEventListener('change', () => {
     renderWAMSection();
   });
 }
@@ -488,9 +509,9 @@ function renderModal() {
   const rowsHtml = assessments.map((a, i) => `
     <tr data-aid="${a.id}">
       <td><input type="text" data-field="name" value="${escapeHtml(a.name)}" placeholder="e.g. Assignment ${i + 1}" /></td>
-      <td class="col-num"><input type="number" class="input-num" data-field="weight" value="${a.weight ?? ''}" min="0" max="100" step="0.1" placeholder="—" /></td>
-      <td class="col-num"><input type="number" class="input-num" data-field="score" value="${a.score ?? ''}" min="0" max="100" step="0.1" placeholder="—" /></td>
-      <td class="col-num"><input type="number" class="input-num" data-field="predicted" value="${a.predicted ?? ''}" min="0" max="100" step="0.1" placeholder="—" /></td>
+      <td class="col-num"><input type="number" class="input-num" data-field="weight" value="${a.weight ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="—" /></td>
+      <td class="col-num"><input type="number" class="input-num" data-field="score" value="${a.score ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="—" /></td>
+      <td class="col-num"><input type="number" class="input-num" data-field="predicted" value="${a.predicted ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="—" /></td>
       <td class="col-actions"><button class="btn-icon btn-del" type="button" aria-label="Delete assessment">×</button></td>
     </tr>
   `).join('');
@@ -504,15 +525,15 @@ function renderModal() {
       <div class="row">
         <div class="field-with-label">
           <label>Weight (%)</label>
-          <input type="number" class="input-num" data-field="weight" value="${a.weight ?? ''}" min="0" max="100" step="0.1" placeholder="—" />
+          <input type="number" class="input-num" data-field="weight" value="${a.weight ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="—" />
         </div>
         <div class="field-with-label">
           <label>Actual score</label>
-          <input type="number" class="input-num" data-field="score" value="${a.score ?? ''}" min="0" max="100" step="0.1" placeholder="—" />
+          <input type="number" class="input-num" data-field="score" value="${a.score ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="—" />
         </div>
         <div class="field-with-label full">
           <label>Predicted score (what-if)</label>
-          <input type="number" class="input-num" data-field="predicted" value="${a.predicted ?? ''}" min="0" max="100" step="0.1" placeholder="—" />
+          <input type="number" class="input-num" data-field="predicted" value="${a.predicted ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="—" />
         </div>
       </div>
       <div class="delete-row">
@@ -697,12 +718,15 @@ function renderModal() {
         if (f === 'name') a.name = inp.value;
         else {
           const v = inp.value;
-          a[f] = v === '' ? null : Number(v);
+          a[f] = toNullableNumber(v);
         }
         debounceSave();
-        // Re-render summary + required grid live without rebuilding the whole modal.
-        // Simpler: just re-render the modal on a debounce.
-        debouncedRemodal();
+      });
+      inp.addEventListener('change', () => {
+        persist();
+        renderModal();
+        renderTimeline();
+        renderWAMSection();
       });
     });
 
@@ -719,26 +743,6 @@ function renderModal() {
   $$('.assessments-table tr[data-aid]').forEach(wireAssessmentNode);
   $$('.assessments-stack .assessment-card[data-aid]').forEach(wireAssessmentNode);
 }
-
-const debouncedRemodal = debounce(() => {
-  // Save which field had focus so editing doesn't get interrupted.
-  const active = document.activeElement;
-  const aid = active?.closest('[data-aid]')?.dataset.aid;
-  const field = active?.dataset.field;
-  const sel = (active && 'selectionStart' in active) ? active.selectionStart : null;
-  renderModal();
-  if (aid && field) {
-    const candidates = $$(`[data-aid="${aid}"] [data-field="${field}"]`);
-    // Pick one visible to the user — table row OR stack card (only one is visible at a time).
-    const visible = candidates.find(el => el.offsetParent !== null) || candidates[0];
-    if (visible) {
-      visible.focus();
-      if (sel != null && 'setSelectionRange' in visible) {
-        try { visible.setSelectionRange(sel, sel); } catch {}
-      }
-    }
-  }
-}, 250);
 
 function debounce(fn, ms) {
   let t;

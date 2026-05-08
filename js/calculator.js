@@ -41,6 +41,16 @@ export function totalWeight(assessments) {
   return assessments.reduce((sum, a) => sum + (Number(a.weight) || 0), 0);
 }
 
+function actualWeight(assessments) {
+  return assessments.reduce((sum, a) => {
+    return sum + (hasActualScore(a) ? Number(a.weight) || 0 : 0);
+  }, 0);
+}
+
+function weightsAddTo100(assessments) {
+  return Math.abs(totalWeight(assessments) - 100) < 0.01;
+}
+
 // True if the assessment has a known actual score.
 export function hasActualScore(a) {
   return a.score !== null && a.score !== undefined && a.score !== '' && !Number.isNaN(Number(a.score));
@@ -81,11 +91,7 @@ export function currentPerformance(assessments) {
 
 // Sum of weight of assessments that are still unknown (no actual score).
 export function remainingWeight(assessments) {
-  let r = 0;
-  for (const a of assessments) {
-    if (!hasActualScore(a)) r += Number(a.weight) || 0;
-  }
-  return r;
+  return Math.max(0, 100 - actualWeight(assessments));
 }
 
 // Score (0-100) needed on average across all remaining assessments to hit `target` final mark.
@@ -131,12 +137,17 @@ export function predictedFinal(assessments, assumedScore = null) {
       coveredWeight += w;
     }
   }
+  if (assumedScore != null && coveredWeight < 100) {
+    total += (Number(assumedScore) * (100 - coveredWeight)) / 100;
+    coveredWeight = 100;
+  }
   return { mark: total, coveredWeight };
 }
 
 // Final mark when every assessment has an actual score. Null otherwise.
 export function finalMark(assessments) {
   if (assessments.length === 0) return null;
+  if (!weightsAddTo100(assessments)) return null;
   for (const a of assessments) {
     if (!hasActualScore(a)) return null;
   }
@@ -152,7 +163,7 @@ export function finalMark(assessments) {
 export function isSubjectComplete(subject) {
   if (subject.completed) return true;
   if (!subject.assessments || subject.assessments.length === 0) return false;
-  return subject.assessments.every(hasActualScore);
+  return weightsAddTo100(subject.assessments) && subject.assessments.every(hasActualScore);
 }
 
 // Final or best-effort mark for a subject. Used for WAM rollup.
@@ -178,33 +189,42 @@ export function subjectMark(subject) {
 export function projectedFinal(subject) {
   const assessments = subject.assessments || [];
   if (assessments.length === 0) return null;
-  const totalW = totalWeight(assessments);
-  if (totalW === 0) return null;
-
-  const current = currentPerformance(assessments);
+  if (totalWeight(assessments) === 0) return null;
 
   let total = 0;
   let coveredWeight = 0;
+  let actualWeighted = 0;
+  let actualW = 0;
+  let knownWeighted = 0;
+  let knownW = 0;
   for (const a of assessments) {
     const w = Number(a.weight) || 0;
     if (hasActualScore(a)) {
-      total += (Number(a.score) * w) / 100;
+      const score = Number(a.score);
+      total += (score * w) / 100;
       coveredWeight += w;
+      actualWeighted += score * w;
+      actualW += w;
+      knownWeighted += score * w;
+      knownW += w;
     } else if (hasPredictedScore(a)) {
-      total += (Number(a.predicted) * w) / 100;
+      const predicted = Number(a.predicted);
+      total += (predicted * w) / 100;
       coveredWeight += w;
+      knownWeighted += predicted * w;
+      knownW += w;
     }
   }
 
-  const uncoveredW = totalW - coveredWeight;
+  const uncoveredW = Math.max(0, 100 - coveredWeight);
   if (uncoveredW <= 0) {
     return total; // already covers everything
   }
-  if (current == null) {
-    // No actual scores and no predictions at all — can't project
-    return null;
-  }
-  total += (current * uncoveredW) / 100;
+  const basis = actualW > 0
+    ? actualWeighted / actualW
+    : (knownW > 0 ? knownWeighted / knownW : null);
+  if (basis == null) return null;
+  total += (basis * uncoveredW) / 100;
   return total;
 }
 
