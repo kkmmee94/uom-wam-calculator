@@ -814,3 +814,4 @@ document.addEventListener('keydown', (e) => {
 
 wireHeader();
 render();
+document.body.classList.add('app-ready');

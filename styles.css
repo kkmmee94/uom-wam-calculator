@@ -1037,6 +1037,19 @@ a:hover { text-decoration: underline; }
 }
 .spacer { flex: 1; }
 
+/* Boot fallback shown until JS removes it */
+.boot-message {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px 22px;
+  text-align: center;
+  color: var(--text-soft);
+  box-shadow: var(--shadow-sm);
+}
+.boot-message strong { color: var(--text); display: block; margin-bottom: 6px; }
+body.app-ready #boot-fallback { display: none; }
+
 /* Prevent iOS auto-zoom on focus by ensuring inputs are >= 16px */
 @media (max-width: 599px) {
   input,

@@ -10,7 +10,7 @@
   <!-- PWA -->
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" type="image/svg+xml" href="icon.svg" />
-  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="apple-touch-icon" href="icon.svg" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="WAM" />
@@ -39,6 +39,14 @@
   </header>
 
   <main id="main" class="container app-main">
+    <noscript>
+      <div class="boot-message">
+        <strong>This app needs JavaScript.</strong>
+        Please enable it in your browser settings, then refresh the page.
+      </div>
+    </noscript>
+    <div id="boot-fallback" class="boot-message">Loading the app…</div>
+
     <!-- Setup banner / first-run flow injected here when needed -->
     <section id="setup-section" hidden></section>
 
