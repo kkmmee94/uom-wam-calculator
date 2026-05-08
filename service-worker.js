@@ -1,5 +1,5 @@
 // Minimal app-shell service worker for PWA install / offline support.
-const CACHE = 'uom-wam-v6';
+const CACHE = 'uom-wam-v7';
 const ASSETS = [
   './',
   'index.html',
@@ -8,6 +8,7 @@ const ASSETS = [
   'icon.svg',
   'js/app.js',
   'js/calculator.js',
+  'js/course-planner-import.js',
   'js/storage.js',
 ];
 

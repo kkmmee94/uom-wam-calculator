@@ -15,6 +15,9 @@ import {
   predictedWAM,
   requiredAverageForWAM,
   isSubjectComplete,
+  directFinalMark,
+  isPassFailSubject,
+  subjectWAMMark,
   round,
 } from './calculator.js';
 
@@ -200,12 +203,29 @@ test('currentWAM: none complete', () => {
   const s = [{ completed: false, assessments: [{ weight: 50, score: 90 }, { weight: 50 }] }];
   assertEq(currentWAM(s), null);
 });
+test('currentWAM: direct final mark counts without assessments', () => {
+  const subjects = [
+    { finalScore: 82, assessments: [] },
+    { finalScore: 78, assessments: [] },
+  ];
+  assertApprox(currentWAM(subjects), 80);
+});
+test('currentWAM: pass/fail subjects are excluded from WAM', () => {
+  const subjects = [
+    { finalScore: 80, assessments: [] },
+    { gradingMode: 'passFail', passFailStatus: 'passed', assessments: [] },
+  ];
+  assertApprox(currentWAM(subjects), 80);
+});
 test('predictedWAM: includes projections', () => {
   const subjects = [
     { completed: true, assessments: [{ weight: 100, score: 80 }] }, // 80
     { assessments: [{ weight: 50, score: 70 }, { weight: 50, predicted: 70 }] }, // 70
   ];
   assertApprox(predictedWAM(subjects), 75);
+});
+test('subjectWAMMark: pass/fail returns null', () => {
+  assertEq(subjectWAMMark({ gradingMode: 'passFail', passFailStatus: 'passed', assessments: [] }), null);
 });
 
 test('requiredAverageForWAM: typical', () => {
@@ -236,6 +256,12 @@ test('requiredAverageForWAM: high marks still need to maintain', () => {
 test('isSubjectComplete: by flag', () => {
   assert(isSubjectComplete({ completed: true, assessments: [] }));
 });
+test('isSubjectComplete: by direct final mark', () => {
+  assert(isSubjectComplete({ finalScore: 79, assessments: [] }));
+});
+test('isSubjectComplete: by pass/fail outcome', () => {
+  assert(isSubjectComplete({ gradingMode: 'passFail', passFailStatus: 'passed', assessments: [] }));
+});
 test('isSubjectComplete: by all scores known', () => {
   assert(isSubjectComplete({ assessments: [{ weight: 100, score: 80 }] }));
 });
@@ -248,6 +274,13 @@ test('isSubjectComplete: missing score -> incomplete', () => {
 
 test('round: 2 places', () => assertEq(round(73.123456, 2), 73.12));
 test('round: 0 places', () => assertEq(round(73.6, 0), 74));
+test('directFinalMark: clamps and ignores pass/fail', () => {
+  assertEq(directFinalMark({ finalScore: 120 }), 100);
+  assertEq(directFinalMark({ gradingMode: 'passFail', finalScore: 80 }), null);
+});
+test('isPassFailSubject: detects pass/fail subjects', () => {
+  assert(isPassFailSubject({ gradingMode: 'passFail' }));
+});
 
 // --- Validation: weights must sum to 100 ---
 test('totalWeight validation case', () => {

@@ -61,6 +61,23 @@ export function hasPredictedScore(a) {
   return a.predicted !== null && a.predicted !== undefined && a.predicted !== '' && !Number.isNaN(Number(a.predicted));
 }
 
+export function isPassFailSubject(subject) {
+  return subject?.gradingMode === 'passFail';
+}
+
+export function directFinalMark(subject) {
+  if (!subject || isPassFailSubject(subject)) return null;
+  if (subject.finalScore === null || subject.finalScore === undefined || subject.finalScore === '') return null;
+  const n = Number(subject.finalScore);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
+export function isPassFailComplete(subject) {
+  if (!isPassFailSubject(subject)) return false;
+  return subject.passFailStatus === 'passed' || subject.passFailStatus === 'failed' || subject.completed === true;
+}
+
 // "Locked-in" contribution to the final mark from completed assessments.
 // Returned as a number out of 100, e.g. 18.5 means 18.5/100 of the final.
 export function lockedInContribution(assessments) {
@@ -161,6 +178,8 @@ export function finalMark(assessments) {
 // True if the subject is "complete" for WAM purposes — either flagged complete
 // by the user, or every assessment has a real score.
 export function isSubjectComplete(subject) {
+  if (isPassFailComplete(subject)) return true;
+  if (directFinalMark(subject) != null) return true;
   if (subject.completed) return true;
   if (!subject.assessments || subject.assessments.length === 0) return false;
   return weightsAddTo100(subject.assessments) && subject.assessments.every(hasActualScore);
@@ -170,6 +189,9 @@ export function isSubjectComplete(subject) {
 //   actual:    finalMark when complete
 //   predicted: predictedFinal using actual + predicted entries (no assumption)
 export function subjectMark(subject) {
+  if (isPassFailSubject(subject)) return null;
+  const direct = directFinalMark(subject);
+  if (direct != null) return { mark: direct, kind: 'actual' };
   const fm = finalMark(subject.assessments || []);
   if (fm != null) return { mark: fm, kind: 'actual' };
   const pf = predictedFinal(subject.assessments || []);
@@ -187,6 +209,10 @@ export function subjectMark(subject) {
 // This is the "best-guess" final mark used for WAM prediction.
 // Returns null if no information at all.
 export function projectedFinal(subject) {
+  if (isPassFailSubject(subject)) return null;
+  const direct = directFinalMark(subject);
+  if (direct != null) return direct;
+
   const assessments = subject.assessments || [];
   if (assessments.length === 0) return null;
   if (totalWeight(assessments) === 0) return null;
@@ -228,6 +254,23 @@ export function projectedFinal(subject) {
   return total;
 }
 
+export function subjectWAMMark(subject, opts = {}) {
+  if (!subject || isPassFailSubject(subject)) return null;
+
+  const direct = directFinalMark(subject);
+  if (direct != null) return direct;
+
+  const fm = finalMark(subject.assessments || []);
+  if (fm != null) return fm;
+
+  if (opts.includeProjected) {
+    const pj = projectedFinal(subject);
+    if (pj != null) return pj;
+  }
+
+  return null;
+}
+
 // Compute current WAM (from completed subjects). Uses finalMark when every
 // assessment is scored; otherwise — if the user explicitly flagged the subject
 // as complete — falls back to the projected mark so it still counts.
@@ -235,12 +278,8 @@ export function currentWAM(subjects) {
   const marks = [];
   for (const s of subjects) {
     if (!isSubjectComplete(s)) continue;
-    const fm = finalMark(s.assessments || []);
-    if (fm != null) { marks.push(fm); continue; }
-    if (s.completed) {
-      const pj = projectedFinal(s);
-      if (pj != null) marks.push(pj);
-    }
+    const mark = subjectWAMMark(s, { includeProjected: true });
+    if (mark != null) marks.push(mark);
   }
   if (marks.length === 0) return null;
   return marks.reduce((a, b) => a + b, 0) / marks.length;
@@ -250,13 +289,8 @@ export function currentWAM(subjects) {
 export function predictedWAM(subjects) {
   const marks = [];
   for (const s of subjects) {
-    const fm = finalMark(s.assessments || []);
-    if (fm != null) {
-      marks.push(fm);
-      continue;
-    }
-    const proj = projectedFinal(s);
-    if (proj != null) marks.push(proj);
+    const mark = subjectWAMMark(s, { includeProjected: true });
+    if (mark != null) marks.push(mark);
   }
   if (marks.length === 0) return null;
   return marks.reduce((a, b) => a + b, 0) / marks.length;

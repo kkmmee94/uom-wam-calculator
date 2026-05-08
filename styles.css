@@ -307,6 +307,29 @@ a:hover { text-decoration: underline; }
   gap: 14px;
   grid-template-columns: 1fr;
 }
+.course-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.course-card strong,
+.course-card span {
+  display: block;
+}
+.course-card-meta {
+  display: flex;
+  gap: 12px;
+  color: var(--text-soft);
+  font-size: 13px;
+  align-items: center;
+}
+.course-card-meta b { color: var(--text); }
 .wam-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -397,6 +420,7 @@ a:hover { text-decoration: underline; }
 
 @media (min-width: 720px) {
   .wam-section { grid-template-columns: 1fr 1fr; }
+  .wam-section .course-card { grid-column: 1 / -1; }
   .wam-section .wam-target { grid-column: 1 / -1; }
 }
 
@@ -426,6 +450,13 @@ a:hover { text-decoration: underline; }
 .year-head .year-summary {
   font-size: 13px;
   color: var(--text-muted);
+}
+.year-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 .terms-grid {
   display: grid;
@@ -674,6 +705,9 @@ a:hover { text-decoration: underline; }
   box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
+.modal-narrow {
+  max-width: 560px;
+}
 @media (min-width: 720px) {
   .modal { border-radius: 16px; }
 }
@@ -719,6 +753,76 @@ a:hover { text-decoration: underline; }
 }
 @media (min-width: 600px) {
   .subject-meta-form { grid-template-columns: 2fr 1fr; }
+}
+.subject-mode-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 600px) {
+  .subject-mode-panel {
+    grid-template-columns: auto 1fr 1fr;
+    align-items: end;
+  }
+}
+.mode-note {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--text-soft);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.check-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+  color: var(--text-soft);
+}
+.check-row input {
+  width: 16px;
+  height: 16px;
+}
+.status-options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.status-options label {
+  cursor: pointer;
+}
+.status-options input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.status-options span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  padding: 6px 10px;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+.status-options input:checked + span {
+  border-color: var(--primary);
+  background: var(--primary-50);
+  color: var(--primary);
+}
+.status-options input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.is-hidden {
+  display: none !important;
 }
 
 .assessments-table {

@@ -12,8 +12,13 @@ import {
   totalWeight, lockedInContribution, currentPerformance, remainingWeight,
   requiredScoreFor, predictedFinal, finalMark, projectedFinal,
   isSubjectComplete, currentWAM, predictedWAM, requiredAverageForWAM,
+  subjectWAMMark, directFinalMark, isPassFailSubject,
   hasActualScore, hasPredictedScore, round,
 } from './calculator.js';
+
+import {
+  applyCoursePlan, getKnownCoursePlan,
+} from './course-planner-import.js';
 
 // === State + persistence ===
 let state = loadState();
@@ -45,6 +50,12 @@ function gradePill(mark, opts = {}) {
   }[band.key] || '';
   const label = opts.kind === 'predicted' ? `Pred. ${band.label}` : band.label;
   return `<span class="pill ${cls}" title="${band.description} (${band.min}+)">${label}</span>`;
+}
+
+function passFailPill(status) {
+  if (status === 'passed') return '<span class="pill pill-h1">Passed</span>';
+  if (status === 'failed') return '<span class="pill pill-fail">Failed</span>';
+  return '<span class="pill pill-incomplete">Pass/Fail</span>';
 }
 
 function escapeHtml(s) {
@@ -112,6 +123,7 @@ function renderSetup() {
         </label>
         <div class="full" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px;">
           <button class="btn" type="submit" id="setup-submit">Get started</button>
+          <button class="btn btn-secondary" type="button" id="setup-planner-import">Import Course Planner link</button>
           <button class="btn btn-secondary" type="button" id="setup-import">Import existing data</button>
         </div>
       </form>
@@ -139,6 +151,7 @@ function renderSetup() {
     completeSetup(setupForm);
   });
   $('#setup-import').addEventListener('click', () => $('#import-file').click());
+  $('#setup-planner-import').addEventListener('click', openCoursePlannerImport);
 }
 
 // === WAM dashboard ===
@@ -159,9 +172,24 @@ function renderWAMSection() {
   // Use whichever the user told us, or default 24.
   const totalDegree = state.degreeSubjectCount || 24;
   const completedMarks = subjects.filter(isSubjectComplete)
-    .map(s => finalMark(s.assessments || []))
+    .map(s => subjectWAMMark(s, { includeProjected: true }))
     .filter(x => x != null);
   const remainingDegreeSubjects = Math.max(0, totalDegree - completedMarks.length);
+  const passFailCount = subjects.filter(isPassFailSubject).length;
+
+  const coursePlanHtml = state.coursePlan ? `
+    <div class="course-card">
+      <div>
+        <span class="wam-card-title">Course plan</span>
+        <strong>${escapeHtml(state.coursePlan.courseName || 'Imported course')}</strong>
+        <span>${escapeHtml(state.coursePlan.major || state.coursePlan.title || '')}</span>
+      </div>
+      <div class="course-card-meta">
+        <span><b>${subjects.length}</b> subjects</span>
+        ${passFailCount ? `<span><b>${passFailCount}</b> pass/fail</span>` : ''}
+      </div>
+    </div>
+  ` : '';
 
   const target = state.targetWAM ?? '';
   let targetOut = '';
@@ -188,6 +216,7 @@ function renderWAMSection() {
   }
 
   section.innerHTML = `
+    ${coursePlanHtml}
     <div class="wam-card" id="wam-current">
       <div class="wam-card-header">
         <span class="wam-card-title">Current WAM</span>
@@ -261,7 +290,7 @@ function renderTimeline() {
   // Compute a timeline that covers max(default lookahead, any year already used + 1).
   const usedYears = Object.keys(state.years || {}).map(Number).filter(y => !Number.isNaN(y));
   const lookaheadFromState = usedYears.length
-    ? Math.max(1, Math.max(...usedYears) - state.setup.startYear + 2)
+    ? Math.max(1, Math.max(...usedYears) - state.setup.startYear + 1)
     : 0;
   const lookahead = Math.max(state.lookaheadYears || 4, lookaheadFromState);
   state.lookaheadYears = lookahead;
@@ -276,6 +305,8 @@ function renderTimeline() {
   }
 
   const html = [];
+  const years = Array.from(byYear.keys());
+  const lastVisibleYear = years[years.length - 1];
   for (const [year, terms] of byYear.entries()) {
     // Year-level summary
     const yearSubjects = [];
@@ -291,7 +322,12 @@ function renderTimeline() {
       <div class="year-block">
         <div class="year-head">
           <h3>${year}</h3>
-          <span class="year-summary">${completedCount}/${totalCount} subjects complete</span>
+          <div class="year-actions">
+            <span class="year-summary">${completedCount}/${totalCount} subjects complete</span>
+            ${year === lastVisibleYear && (state.lookaheadYears || 4) > 1
+              ? `<button class="btn-link remove-year-btn" data-year="${year}" type="button">Remove year</button>`
+              : ''}
+          </div>
         </div>
         <div class="terms-grid">${termCards}</div>
       </div>
@@ -329,6 +365,19 @@ function renderTimeline() {
       });
     });
   });
+  $$('.remove-year-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const year = Number(el.dataset.year);
+      const yearHasSubjects = Object.values(state.years?.[year] || {})
+        .some(term => (term.subjects || []).length > 0);
+      if (yearHasSubjects && !confirm(`Remove ${year} and all subjects in it? This cannot be undone.`)) return;
+      if (state.years) delete state.years[year];
+      state.lookaheadYears = Math.max(1, (state.lookaheadYears || 4) - 1);
+      persist();
+      renderTimeline();
+      renderWAMSection();
+    });
+  });
 }
 
 function renderTermCard(year, termKey) {
@@ -344,11 +393,9 @@ function renderTermCard(year, termKey) {
     if (fm != null) finals.push(fm);
     else if ((s.assessments || []).some(hasActualScore) || (s.assessments || []).some(hasPredictedScore)) inProgress++;
   }
-  const proj = subjects.map(s => {
-    const fm = finalMark(s.assessments || []);
-    if (fm != null) return fm;
-    return projectedFinal(s);
-  }).filter(x => x != null);
+  const proj = subjects
+    .map(s => subjectWAMMark(s, { includeProjected: true }))
+    .filter(x => x != null);
   const avg = proj.length ? proj.reduce((a, b) => a + b, 0) / proj.length : null;
 
   const subjectRows = subjects.map(s => renderSubjectRow(year, termKey, s)).join('');
@@ -378,20 +425,28 @@ function renderTermCard(year, termKey) {
 function renderSubjectRow(year, termKey, subj) {
   const assessments = subj.assessments || [];
   const total = totalWeight(assessments);
+  const direct = directFinalMark(subj);
   const fm = finalMark(assessments);
   const proj = projectedFinal(subj);
   const complete = isSubjectComplete(subj);
+  const isPassFail = isPassFailSubject(subj);
 
   // At-risk: a Pass is mathematically out of reach, or projection is below 50.
   let atRisk = false;
   const passNeeded = requiredScoreFor(assessments, 50);
-  if (passNeeded.impossible) atRisk = true;
-  if (proj != null && proj < 50) atRisk = true;
+  if (!isPassFail && direct == null && passNeeded.impossible) atRisk = true;
+  if (!isPassFail && proj != null && proj < 50) atRisk = true;
 
   // Mark display
   let markHtml = '';
   let pillHtml = '';
-  if (fm != null) {
+  if (isPassFail) {
+    markHtml = `<span class="mark-num">${subj.passFailStatus === 'failed' ? 'Fail' : (subj.passFailStatus === 'passed' ? 'Pass' : '—')}</span>`;
+    pillHtml = passFailPill(subj.passFailStatus);
+  } else if (direct != null) {
+    markHtml = `<span class="mark-num">${fmtMark(direct)}</span>`;
+    pillHtml = gradePill(direct);
+  } else if (fm != null) {
     markHtml = `<span class="mark-num">${fmtMark(fm)}</span>`;
     pillHtml = gradePill(fm);
   } else if (proj != null) {
@@ -408,8 +463,12 @@ function renderSubjectRow(year, termKey, subj) {
 
   const detail = [];
   if (subj.code) detail.push(escapeHtml(subj.code));
-  if (assessments.length) detail.push(`${assessments.length} assessment${assessments.length === 1 ? '' : 's'}`);
-  if (total !== 100 && assessments.length > 0) detail.push(`weights: ${total}%`);
+  if (subj.category) detail.push(escapeHtml(subj.category));
+  if (subj.level) detail.push(`Level ${subj.level}`);
+  if (isPassFail) detail.push('Pass/Fail');
+  else if (direct != null) detail.push('final mark entered');
+  else if (assessments.length) detail.push(`${assessments.length} assessment${assessments.length === 1 ? '' : 's'}`);
+  if (!isPassFail && direct == null && total !== 100 && assessments.length > 0) detail.push(`weights: ${total}%`);
 
   return `
     <div class="${cls.join(' ')}" data-year="${year}" data-term="${termKey}" data-id="${subj.id}" tabindex="0" role="button" aria-label="Edit ${escapeHtml(subj.name)}">
@@ -441,6 +500,58 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
+function openCoursePlannerImport() {
+  modalSubjectRef = null;
+  const root = $('#modal-root');
+  document.body.style.overflow = 'hidden';
+  root.hidden = false;
+  root.innerHTML = `
+    <div class="modal modal-narrow" role="dialog" aria-modal="true" aria-labelledby="planner-import-title">
+      <div class="modal-head">
+        <h3 id="planner-import-title">Import Course Planner</h3>
+        <button class="btn-icon" id="planner-import-close" aria-label="Close">×</button>
+      </div>
+      <form id="planner-import-form" class="modal-body">
+        <label class="field">
+          <span>Course Planner link</span>
+          <input id="planner-import-url" type="url" placeholder="https://course-planner.unimelb.edu.au/plan/..." autocomplete="off" />
+        </label>
+        <label class="check-row">
+          <input id="planner-import-replace" type="checkbox" checked />
+          <span>Replace my current timeline</span>
+        </label>
+        <div id="planner-import-error" class="weight-warn warn is-hidden"></div>
+        <div class="mode-note">Your shared Bachelor of Science Data Science plan imports directly, including subject codes, levels, points, breadth/discipline labels, and pass/fail subjects.</div>
+      </form>
+      <div class="modal-foot">
+        <button class="btn btn-secondary" id="planner-import-cancel" type="button">Cancel</button>
+        <button class="btn" id="planner-import-submit" type="submit" form="planner-import-form">Import subjects</button>
+      </div>
+    </div>
+  `;
+
+  $('#planner-import-close').addEventListener('click', closeModal);
+  $('#planner-import-cancel').addEventListener('click', closeModal);
+  $('#planner-import-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const url = $('#planner-import-url').value;
+    const replace = $('#planner-import-replace').checked;
+    const plan = getKnownCoursePlan(url);
+    const error = $('#planner-import-error');
+    if (!plan) {
+      error.textContent = 'That Course Planner link is not recognised yet. Paste the Data Science plan link you shared, or add a new known plan to this app.';
+      error.classList.remove('is-hidden');
+      return;
+    }
+    if (replace && allSubjects(state).length > 0 && !confirm('Replace your current timeline with this course plan?')) return;
+    applyCoursePlan(state, plan, { replace });
+    persist();
+    closeModal();
+    render();
+    toast(`Imported ${plan.subjects.length} subjects from Course Planner`, 'success');
+  });
+}
+
 function getModalSubject() {
   if (!modalSubjectRef) return null;
   const { year, term, id } = modalSubjectRef;
@@ -465,15 +576,22 @@ function renderModal() {
   const tInfo = termInfo(term);
 
   const assessments = subj.assessments || [];
+  const isPassFail = isPassFailSubject(subj);
+  const direct = directFinalMark(subj);
+  const useDirectMark = direct != null;
+  const showAssessmentTools = !isPassFail && !useDirectMark;
   const total = totalWeight(assessments);
-  const fm = finalMark(assessments);
-  const proj = projectedFinal(subj);
-  const cur = currentPerformance(assessments);
-  const lockedWeight = assessments.reduce((s, a) => s + (hasActualScore(a) ? Number(a.weight) || 0 : 0), 0);
-  const locked = lockedInContribution(assessments);
+  const assessmentFinal = finalMark(assessments);
+  const fm = direct ?? assessmentFinal;
+  const proj = isPassFail ? null : projectedFinal(subj);
+  const cur = showAssessmentTools ? currentPerformance(assessments) : null;
+  const lockedWeight = showAssessmentTools
+    ? assessments.reduce((s, a) => s + (hasActualScore(a) ? Number(a.weight) || 0 : 0), 0)
+    : 0;
+  const locked = showAssessmentTools ? lockedInContribution(assessments) : 0;
 
   // Required scores for each band
-  const requiredCells = TARGET_THRESHOLDS.map(thr => {
+  const requiredCells = showAssessmentTools ? TARGET_THRESHOLDS.map(thr => {
     const r = requiredScoreFor(assessments, thr.min);
     let cls = '', body = '', helper = '';
     if (r.alreadyReached) {
@@ -503,7 +621,7 @@ function renderModal() {
         <div class="helper">${helper}</div>
       </div>
     `;
-  }).join('');
+  }).join('') : '';
 
   // Assessments table (desktop) + stack (mobile)
   const rowsHtml = assessments.map((a, i) => `
@@ -544,7 +662,7 @@ function renderModal() {
 
   // Weight validation message
   let weightMsg = '';
-  if (assessments.length === 0) {
+  if (!showAssessmentTools || assessments.length === 0) {
     weightMsg = '';
   } else if (total === 100) {
     weightMsg = `<div class="weight-warn ok">Weights total <b>100%</b>.</div>`;
@@ -555,7 +673,7 @@ function renderModal() {
   // At-risk warning if any required score is impossible
   const passReq = requiredScoreFor(assessments, 50);
   let atRiskMsg = '';
-  if (passReq.impossible) {
+  if (showAssessmentTools && passReq.impossible) {
     atRiskMsg = `<div class="weight-warn warn">⚠️ A passing mark is no longer mathematically possible.</div>`;
   }
 
@@ -575,6 +693,42 @@ function renderModal() {
   const remainingDisplay = assessments.length === 0
     ? '<span class="empty">—</span>'
     : `<span>${fmtMark(remW, 0)}<small>%</small></span><small>still to score</small>`;
+  const passFailOutcome = subj.passFailStatus || '';
+  const summaryHtml = isPassFail ? `
+    <div class="summary-cell">
+      <span class="lbl">Outcome</span>
+      <span class="val">${passFailOutcome ? `<span>${passFailOutcome === 'passed' ? 'Passed' : 'Failed'}</span>` : '<span class="empty">—</span>'}</span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">WAM</span>
+      <span class="val"><span>Excluded</span><small>pass/fail</small></span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Type</span>
+      <span class="val"><span>Pass/Fail</span></span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Points</span>
+      <span class="val"><span>${fmtMark(subj.points || 12.5, 1)}</span><small>credit points</small></span>
+    </div>
+  ` : `
+    <div class="summary-cell">
+      <span class="lbl">${fm != null ? 'Final mark' : 'Projected mark'}</span>
+      <span class="val">${finalMarkDisplay}</span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Locked-in</span>
+      <span class="val">${useDirectMark ? '<span>Direct</span><small>final mark</small>' : lockedDisplay}</span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Current avg</span>
+      <span class="val">${useDirectMark ? '<span>—</span>' : curDisplay}</span>
+    </div>
+    <div class="summary-cell">
+      <span class="lbl">Remaining</span>
+      <span class="val">${useDirectMark ? '<span>0<small>%</small></span><small>complete</small>' : remainingDisplay}</span>
+    </div>
+  `;
 
   root.hidden = false;
   root.innerHTML = `
@@ -605,53 +759,66 @@ function renderModal() {
           </label>
         </div>
 
+        <div class="subject-mode-panel">
+          <label class="toggle">
+            <input type="checkbox" id="passfail-toggle" ${isPassFail ? 'checked' : ''} />
+            <span class="track"></span>
+            <span>Pass/Fail subject</span>
+          </label>
+          <label class="field ${isPassFail ? 'is-hidden' : ''}" id="direct-mark-field">
+            <span>Final subject mark (optional)</span>
+            <input type="number" id="final-score" value="${subj.finalScore ?? ''}" min="0" max="100" step="0.1" inputmode="decimal" placeholder="Enter final mark only" />
+          </label>
+          <div class="field ${isPassFail ? '' : 'is-hidden'}" id="passfail-status-field">
+            <span>Pass/Fail outcome</span>
+            <div class="status-options" role="group" aria-label="Pass/Fail outcome">
+              <label><input type="radio" name="passfail-status" value="" ${passFailOutcome === '' ? 'checked' : ''} /> <span>Not entered</span></label>
+              <label><input type="radio" name="passfail-status" value="passed" ${passFailOutcome === 'passed' ? 'checked' : ''} /> <span>Passed</span></label>
+              <label><input type="radio" name="passfail-status" value="failed" ${passFailOutcome === 'failed' ? 'checked' : ''} /> <span>Failed</span></label>
+            </div>
+          </div>
+        </div>
+
         <div class="subject-summary">
-          <div class="summary-cell">
-            <span class="lbl">${fm != null ? 'Final mark' : 'Projected mark'}</span>
-            <span class="val">${finalMarkDisplay}</span>
-          </div>
-          <div class="summary-cell">
-            <span class="lbl">Locked-in</span>
-            <span class="val">${lockedDisplay}</span>
-          </div>
-          <div class="summary-cell">
-            <span class="lbl">Current avg</span>
-            <span class="val">${curDisplay}</span>
-          </div>
-          <div class="summary-cell">
-            <span class="lbl">Remaining</span>
-            <span class="val">${remainingDisplay}</span>
-          </div>
+          ${summaryHtml}
         </div>
 
-        <h4 style="margin: 6px 0 0; font-size: 14px;">Assessments</h4>
-        <table class="assessments-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th class="col-num">Weight%</th>
-              <th class="col-num">Score</th>
-              <th class="col-num">Predicted</th>
-              <th class="col-actions"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rowsHtml || `<tr><td colspan="5" class="assessments-empty">No assessments yet — add one below.</td></tr>`}
-          </tbody>
-        </table>
-        <div class="assessments-stack">
-          ${stackHtml || `<div class="assessments-empty">No assessments yet — add one below.</div>`}
-        </div>
-        <div>
-          <button class="btn btn-secondary btn-sm" id="add-assessment" type="button">+ Add assessment</button>
-        </div>
-        ${weightMsg}
-        ${atRiskMsg}
+        ${showAssessmentTools ? `
+          <h4 style="margin: 6px 0 0; font-size: 14px;">Assessments</h4>
+          <table class="assessments-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="col-num">Weight%</th>
+                <th class="col-num">Score</th>
+                <th class="col-num">Predicted</th>
+                <th class="col-actions"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml || `<tr><td colspan="5" class="assessments-empty">No assessments yet — add one below.</td></tr>`}
+            </tbody>
+          </table>
+          <div class="assessments-stack">
+            ${stackHtml || `<div class="assessments-empty">No assessments yet — add one below.</div>`}
+          </div>
+          <div>
+            <button class="btn btn-secondary btn-sm" id="add-assessment" type="button">+ Add assessment</button>
+          </div>
+          ${weightMsg}
+          ${atRiskMsg}
 
-        <h4 style="margin: 6px 0 0; font-size: 14px;">What you'd need on remaining assessments</h4>
-        <div class="required-grid">
-          ${requiredCells}
-        </div>
+          <h4 style="margin: 6px 0 0; font-size: 14px;">What you'd need on remaining assessments</h4>
+          <div class="required-grid">
+            ${requiredCells}
+          </div>
+        ` : `
+          <div class="mode-note">
+            ${isPassFail
+              ? 'This subject is marked pass/fail and is excluded from WAM.'
+              : 'The final subject mark is being used. Clear it if you want to calculate from assessments instead.'}
+          </div>
+        `}
 
         <label class="field">
           <span>Notes (optional)</span>
@@ -669,15 +836,61 @@ function renderModal() {
   // Wire up — modal-level
   $('#modal-close').addEventListener('click', closeModal);
   $('#modal-cancel').addEventListener('click', closeModal);
-  root.addEventListener('click', (e) => {
-    if (e.target === root) closeModal();
-  });
 
   // Subject-level edits
   const debounceSave = debounce(() => { persist(); renderTimeline(); renderWAMSection(); }, 300);
   $('#subj-name').addEventListener('input', (e) => { subj.name = e.target.value; debounceSave(); });
   $('#subj-code').addEventListener('input', (e) => { subj.code = e.target.value; debounceSave(); });
   $('#subj-notes').addEventListener('input', (e) => { subj.notes = e.target.value; debounceSave(); });
+
+  const finalScoreInput = $('#final-score');
+  if (finalScoreInput) {
+    finalScoreInput.addEventListener('input', (e) => {
+      subj.finalScore = toNullableNumber(e.target.value);
+      if (subj.finalScore != null) subj.completed = true;
+      persist();
+      renderTimeline();
+      renderWAMSection();
+    });
+    finalScoreInput.addEventListener('change', () => {
+      if (subj.finalScore == null && (!subj.assessments || subj.assessments.length === 0)) {
+        subj.completed = false;
+      }
+      persist();
+      renderModal();
+      renderTimeline();
+      renderWAMSection();
+    });
+  }
+
+  const passFailToggle = $('#passfail-toggle');
+  if (passFailToggle) {
+    passFailToggle.addEventListener('change', (e) => {
+      subj.gradingMode = e.target.checked ? 'passFail' : 'graded';
+      if (subj.gradingMode === 'passFail') {
+        subj.finalScore = null;
+        subj.completed = subj.passFailStatus === 'passed' || subj.passFailStatus === 'failed';
+      } else {
+        subj.passFailStatus = null;
+      }
+      persist();
+      renderModal();
+      renderTimeline();
+      renderWAMSection();
+    });
+  }
+
+  $$('input[name="passfail-status"]').forEach(input => {
+    input.addEventListener('change', (e) => {
+      if (!e.target.checked) return;
+      subj.passFailStatus = e.target.value || null;
+      subj.completed = subj.passFailStatus === 'passed' || subj.passFailStatus === 'failed';
+      persist();
+      renderModal();
+      renderTimeline();
+      renderWAMSection();
+    });
+  });
 
   $('#completed-toggle').addEventListener('change', (e) => {
     subj.completed = e.target.checked;
@@ -687,14 +900,17 @@ function renderModal() {
     renderWAMSection();
   });
 
-  $('#add-assessment').addEventListener('click', () => {
-    subj.assessments = subj.assessments || [];
-    subj.assessments.push(newAssessment(`Assessment ${subj.assessments.length + 1}`));
-    persist();
-    renderModal();
-    renderTimeline();
-    renderWAMSection();
-  });
+  const addAssessment = $('#add-assessment');
+  if (addAssessment) {
+    addAssessment.addEventListener('click', () => {
+      subj.assessments = subj.assessments || [];
+      subj.assessments.push(newAssessment(`Assessment ${subj.assessments.length + 1}`));
+      persist();
+      renderModal();
+      renderTimeline();
+      renderWAMSection();
+    });
+  }
 
   $('#delete-subject').addEventListener('click', () => {
     if (!confirm(`Delete "${subj.name}"? This cannot be undone.`)) return;
@@ -754,6 +970,8 @@ function debounce(fn, ms) {
 
 // === Header actions ===
 function wireHeader() {
+  $('#btn-planner-import').addEventListener('click', openCoursePlannerImport);
+
   $('#btn-export').addEventListener('click', () => {
     const data = exportJSON(state);
     const blob = new Blob([data], { type: 'application/json' });

@@ -5,10 +5,10 @@ const STORAGE_KEY = 'uom-wam-calculator/v1';
 const SCHEMA_VERSION = 1;
 
 export const TERMS = [
-  { key: 'sem1',   label: 'Semester 1', maxSubjects: 4, season: 'autumn' },
+  { key: 'summer', label: 'Summer Term', maxSubjects: 2, season: 'summer' },
+  { key: 'sem1',   label: 'Semester 1', maxSubjects: 5, season: 'autumn' },
   { key: 'winter', label: 'Winter',     maxSubjects: 2, season: 'winter' },
-  { key: 'sem2',   label: 'Semester 2', maxSubjects: 4, season: 'spring' },
-  { key: 'summer', label: 'Summer',     maxSubjects: 2, season: 'summer' },
+  { key: 'sem2',   label: 'Semester 2', maxSubjects: 5, season: 'spring' },
 ];
 
 export function termInfo(termKey) {
@@ -25,6 +25,7 @@ export function defaultState() {
       startSemester: null,
     },
     years: {}, // map of "2024" -> { sem1: { subjects: [] }, winter: {...}, ... }
+    coursePlan: null,
     targetWAM: null,
     settings: {
       showWhatIf: true,
@@ -64,6 +65,7 @@ function migrate(state) {
     ...state,
     setup: { ...def.setup, ...(state.setup || {}) },
     years: state.years || {},
+    coursePlan: state.coursePlan || null,
     settings: { ...def.settings, ...(state.settings || {}) },
   };
 }
@@ -73,17 +75,16 @@ function migrate(state) {
 export function buildTimeline(startYear, startSemester, lookaheadYears = 6) {
   const chunks = [];
   if (!startYear) return chunks;
-  // If the student started in semester 2, they don't have a sem1 in their first year.
-  // Order within a year is sem1 -> winter -> sem2 -> summer.
+  // My Course Planner treats Summer Term as the first teaching period of the calendar year.
   for (let i = 0; i < lookaheadYears; i++) {
     const year = startYear + i;
+    if (i > 0) chunks.push({ year, term: 'summer' });
     const includeSem1 = !(i === 0 && startSemester === 2);
     if (includeSem1) {
       chunks.push({ year, term: 'sem1' });
       chunks.push({ year, term: 'winter' });
     }
     chunks.push({ year, term: 'sem2' });
-    chunks.push({ year, term: 'summer' });
   }
   return chunks;
 }
@@ -124,6 +125,12 @@ export function newSubject(name = 'New subject') {
     id: newId(),
     name,
     code: '',
+    category: '',
+    level: null,
+    points: 12.5,
+    gradingMode: 'graded',
+    finalScore: null,
+    passFailStatus: null,
     completed: false,
     assessments: [],
     notes: '',
