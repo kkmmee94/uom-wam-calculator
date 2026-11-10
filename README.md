@@ -14,7 +14,7 @@ Everything is saved locally in your browser — nothing is sent to a server. Wor
   - Summer: up to 2 subjects
 - **Per-subject assessments** with name, weight, actual score, and predicted score (what-if).
 - Validates that **assessment weights sum to 100%**.
-- **Required-score grid**: shows the average mark you'd need on remaining assessments to hit Pass / H3 / H2B / H2A / H1 — with a clear flag when a target is mathematically out of reach.
+- **Required-score grid**: shows the average mark you'd need on remaining assessments to hit Pass (50+), the 60+ planning target, or H3 / H2B / H2A / H1 — with a clear flag when a target is mathematically out of reach.
 - **What-if controls**: enter predicted scores for any future assessment and see the projected final mark and grade band update live.
 - **Current vs predicted WAM** at a glance:
   - *Current WAM* — average of completed subjects only.

@@ -13,6 +13,7 @@ export const GRADE_BANDS = [
 // Lowest-mark thresholds students typically aim for.
 export const TARGET_THRESHOLDS = [
   { key: 'P',   label: 'Pass', min: 50 },
+  { key: 'T60', label: 'Target', min: 60 },
   { key: 'H3',  label: 'H3',   min: 65 },
   { key: 'H2B', label: 'H2B',  min: 70 },
   { key: 'H2A', label: 'H2A',  min: 75 },

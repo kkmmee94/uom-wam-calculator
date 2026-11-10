@@ -1,5 +1,5 @@
 // Minimal app-shell service worker for PWA install / offline support.
-const CACHE = 'uom-wam-v9';
+const CACHE = 'uom-wam-v10';
 const ASSETS = [
   './',
   'index.html',
